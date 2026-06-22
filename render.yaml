@@ -1,0 +1,15 @@
+# Render blueprint — deploys this Next.js + Socket.IO chat as a single web service.
+# In the Render dashboard: New + > Blueprint, pick this repo, and it reads this file.
+services:
+  - type: web
+    name: chatroom
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20.18.0"

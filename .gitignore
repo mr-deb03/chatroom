@@ -1,0 +1,5 @@
+node_modules/
+.next/
+data.json
+public/uploads/*
+!public/uploads/.gitkeep
