@@ -1,6 +1,8 @@
 /**
  * Custom Next.js server + Socket.IO.
  * Next handles the UI/HTTP; Socket.IO (same port) handles real-time chat.
+ * A single socket can be joined to MANY rooms at once (WhatsApp-style chat list),
+ * so every real-time event is tagged with its room `code`.
  * Room/message state is persisted to data.json so chats survive restarts.
  */
 const { createServer } = require('http');
@@ -57,16 +59,13 @@ app.prepare().then(() => {
   const server = createServer((req, res) => handle(req, res, parse(req.url, true)));
   const io = new Server(server, { maxHttpBufferSize: 1e8, cors: { origin: '*' } });
 
-  // ----- REST-ish helpers exposed through Next API routes call into data.json directly,
-  // ----- but room create/lookup is also offered over sockets for convenience. -----
-
-  const online = new Map(); // socket.id -> { code, userId, name }
+  const online = new Map(); // socket.id -> { userId, name, codes: Set<string> }
 
   function presenceList(code) {
     const room = getRoom(code);
     if (!room) return [];
     const onlineIds = new Set();
-    for (const v of online.values()) if (v.code === code) onlineIds.add(v.userId);
+    for (const v of online.values()) if (v.codes.has(code)) onlineIds.add(v.userId);
     return Object.entries(room.members).map(([userId, m]) => ({
       userId,
       name: m.name,
@@ -80,7 +79,7 @@ app.prepare().then(() => {
   function sysMessage(code, text) {
     const room = getRoom(code);
     if (!room) return;
-    const m = { id: makeId(), type: 'system', text, ts: Date.now() };
+    const m = { id: makeId(), code, type: 'system', text, ts: Date.now() };
     room.messages.push(m);
     save();
     io.to(code).emit('message', m);
@@ -95,7 +94,7 @@ app.prepare().then(() => {
       ack && ack({ ok: true, code: room.code, name: room.name, ownerId: room.ownerId });
     });
 
-    // Join a room
+    // Join a room (may be called several times — one socket can hold many rooms)
     socket.on('join', ({ code, profile }, ack) => {
       code = String(code || '').toUpperCase().trim();
       const room = getRoom(code);
@@ -103,14 +102,21 @@ app.prepare().then(() => {
         ack && ack({ ok: false, error: 'Room not found. Check the code and try again.' });
         return;
       }
-      const userId = profile.userId;
-      const isNew = !room.members[userId];
-      room.members[userId] = {
+      let sess = online.get(socket.id);
+      if (!sess) {
+        sess = { userId: profile.userId, name: profile.name || 'Anonymous', codes: new Set() };
+        online.set(socket.id, sess);
+      }
+      sess.userId = profile.userId;
+      sess.name = profile.name || sess.name;
+
+      const isNew = !room.members[sess.userId];
+      room.members[sess.userId] = {
         name: profile.name || 'Anonymous',
         avatar: profile.avatar || '',
         lastSeen: Date.now(),
       };
-      online.set(socket.id, { code, userId, name: profile.name });
+      sess.codes.add(code);
       socket.join(code);
       save();
 
@@ -124,14 +130,17 @@ app.prepare().then(() => {
       emitPresence(code);
     });
 
-    // New message (text / image / voice / file)
+    // New message (text / image / voice / file) — must carry its room `code`
     socket.on('message', (msg, ack) => {
       const sess = online.get(socket.id);
       if (!sess) return;
-      const room = getRoom(sess.code);
+      const code = String(msg.code || '').toUpperCase();
+      if (!sess.codes.has(code)) return; // not joined to that room
+      const room = getRoom(code);
       if (!room) return;
       const message = {
         id: makeId(),
+        code,
         userId: sess.userId,
         name: msg.name || sess.name || 'Anonymous',
         avatar: msg.avatar || '',
@@ -145,21 +154,21 @@ app.prepare().then(() => {
       room.messages.push(message);
       if (room.messages.length > 5000) room.messages.shift();
       save();
-      io.to(sess.code).emit('message', message);
+      io.to(code).emit('message', message);
       ack && ack({ ok: true, id: message.id, ts: message.ts });
     });
 
-    socket.on('typing', ({ isTyping }) => {
+    socket.on('typing', ({ code, isTyping }) => {
       const sess = online.get(socket.id);
-      if (!sess) return;
-      socket.to(sess.code).emit('typing', { userId: sess.userId, name: sess.name, isTyping: !!isTyping });
+      if (!sess || !sess.codes.has(code)) return;
+      socket.to(code).emit('typing', { code, userId: sess.userId, name: sess.name, isTyping: !!isTyping });
     });
 
     // Delete one message for everyone (author or owner)
-    socket.on('deleteMessage', ({ id }) => {
+    socket.on('deleteMessage', ({ code, id }) => {
       const sess = online.get(socket.id);
-      if (!sess) return;
-      const room = getRoom(sess.code);
+      if (!sess || !sess.codes.has(code)) return;
+      const room = getRoom(code);
       if (!room) return;
       const m = room.messages.find((x) => x.id === id);
       if (!m) return;
@@ -168,14 +177,14 @@ app.prepare().then(() => {
       m.text = '';
       m.media = null;
       save();
-      io.to(sess.code).emit('messageDeleted', { id });
+      io.to(code).emit('messageDeleted', { code, id });
     });
 
     // Clear the entire chat for everyone (owner only, or anyone if no owner set)
-    socket.on('clearChat', (_, ack) => {
+    socket.on('clearChat', ({ code }, ack) => {
       const sess = online.get(socket.id);
-      if (!sess) return;
-      const room = getRoom(sess.code);
+      if (!sess || !sess.codes.has(code)) return;
+      const room = getRoom(code);
       if (!room) return;
       if (room.ownerId && room.ownerId !== sess.userId) {
         ack && ack({ ok: false, error: 'Only the room creator can delete the chat for everyone.' });
@@ -183,40 +192,43 @@ app.prepare().then(() => {
       }
       room.messages = [];
       save();
-      io.to(sess.code).emit('chatCleared');
+      io.to(code).emit('chatCleared', { code });
       ack && ack({ ok: true });
     });
 
     socket.on('updateProfile', ({ profile }) => {
       const sess = online.get(socket.id);
       if (!sess) return;
-      const room = getRoom(sess.code);
-      if (!room || !room.members[sess.userId]) return;
-      room.members[sess.userId].name = profile.name || room.members[sess.userId].name;
-      room.members[sess.userId].avatar = profile.avatar ?? room.members[sess.userId].avatar;
-      sess.name = room.members[sess.userId].name;
+      sess.name = profile.name || sess.name;
+      for (const code of sess.codes) {
+        const room = getRoom(code);
+        if (!room || !room.members[sess.userId]) continue;
+        room.members[sess.userId].name = profile.name || room.members[sess.userId].name;
+        room.members[sess.userId].avatar = profile.avatar ?? room.members[sess.userId].avatar;
+        emitPresence(code);
+      }
       save();
-      emitPresence(sess.code);
     });
 
-    socket.on('leave', () => {
+    // Leave a single room (remove from this user's chat list)
+    socket.on('leave', ({ code }) => {
       const sess = online.get(socket.id);
       if (!sess) return;
-      socket.leave(sess.code);
-      online.delete(socket.id);
-      emitPresence(sess.code);
+      sess.codes.delete(code);
+      socket.leave(code);
+      emitPresence(code);
     });
 
     socket.on('disconnect', () => {
       const sess = online.get(socket.id);
       if (!sess) return;
-      const room = getRoom(sess.code);
-      if (room && room.members[sess.userId]) {
-        room.members[sess.userId].lastSeen = Date.now();
-        save();
+      for (const code of sess.codes) {
+        const room = getRoom(code);
+        if (room && room.members[sess.userId]) room.members[sess.userId].lastSeen = Date.now();
+        emitPresence(code);
       }
       online.delete(socket.id);
-      emitPresence(sess.code);
+      save();
     });
   });
 

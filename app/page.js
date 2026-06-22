@@ -4,52 +4,81 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import Avatar from './components/Avatar';
 import VoiceNote from './components/VoiceNote';
 import {
-  uid, formatTime, dayKey, dayLabel, fmtDuration, lastSeenLabel,
+  uid, formatTime, dayKey, dayLabel, fmtDuration, lastSeenLabel, shortStamp,
   store, uploadFile, fileToCompressedDataURL,
 } from './lib/util';
 
 export default function Page() {
   const [mounted, setMounted] = useState(false);
-  const [screen, setScreen] = useState('profile'); // profile | lobby | chat
+  const [screen, setScreen] = useState('profile'); // profile | home
   const [profile, setProfile] = useState({ userId: '', name: '', about: '', avatar: '' });
 
-  const [tab, setTab] = useState('join');
-  const [joinCode, setJoinCode] = useState('');
-  const [createName, setCreateName] = useState('');
-  const [joinError, setJoinError] = useState('');
-  const [recent, setRecent] = useState([]);
+  // chats: { [code]: { info, messages, members, unread, clearedAt, hidden:Set, lastTs } }
+  const [chats, setChats] = useState({});
+  const [activeCode, setActiveCode] = useState(null);
+  const [typingByRoom, setTypingByRoom] = useState({}); // { code: { userId: name } }
 
-  const [room, setRoom] = useState(null); // { code, name, ownerId }
-  const [messages, setMessages] = useState([]);
-  const [members, setMembers] = useState([]);
-  const [typingUsers, setTypingUsers] = useState({});
   const [text, setText] = useState('');
   const [replyTo, setReplyTo] = useState(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);     // conversation overflow menu
+  const [sideMenuOpen, setSideMenuOpen] = useState(false); // sidebar overflow menu
+  const [itemMenu, setItemMenu] = useState(null);      // code whose list-item menu is open
   const [modal, setModal] = useState(null);
   const [lightbox, setLightbox] = useState('');
   const [toastMsg, setToastMsg] = useState('');
 
-  // local-only message hiding (delete for me) + clear chat for me
-  const [hiddenIds, setHiddenIds] = useState(() => new Set());
-  const [clearedAt, setClearedAt] = useState(0);
+  // new-chat modal fields
+  const [tab, setTab] = useState('join');
+  const [joinCode, setJoinCode] = useState('');
+  const [createName, setCreateName] = useState('');
+  const [joinError, setJoinError] = useState('');
 
   // recording
   const [recording, setRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
 
   const socketRef = useRef(null);
-  const roomRef = useRef(null);
   const profileRef = useRef(profile);
+  const activeCodeRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
-  const typingTimeoutsRef = useRef({}); // others' typing timeouts
+  const typingTimeoutsRef = useRef({});
   const selfTypingRef = useRef(null);
-  const mediaRef = useRef({ recorder: null, chunks: [], stream: null, timer: null, send: false });
+  const mediaRef = useRef({ recorder: null, chunks: [], stream: null, timer: null, send: false, startTime: 0 });
 
   const toast = useCallback((m) => {
     setToastMsg(m);
     setTimeout(() => setToastMsg(''), 2200);
+  }, []);
+
+  // ---------- recent rooms persistence ----------
+  const rememberRoom = useCallback((info) => {
+    const list = store.get('recentRooms', []).filter((x) => x.code !== info.code);
+    list.unshift({ code: info.code, name: info.name, ts: Date.now() });
+    store.set('recentRooms', list.slice(0, 30));
+  }, []);
+  const forgetRoom = useCallback((code) => {
+    store.set('recentRooms', store.get('recentRooms', []).filter((x) => x.code !== code));
+  }, []);
+
+  const upsertChat = useCallback((res) => {
+    const code = res.room.code;
+    setChats((prev) => {
+      const existing = prev[code];
+      const msgs = res.messages || [];
+      return {
+        ...prev,
+        [code]: {
+          info: res.room,
+          messages: msgs,
+          members: res.members || existing?.members || [],
+          unread: existing?.unread || 0,
+          clearedAt: store.get(`cleared:${code}`, 0),
+          hidden: new Set(store.get(`hidden:${code}`, [])),
+          lastTs: msgs.length ? msgs[msgs.length - 1].ts : (existing?.lastTs || Date.now()),
+        },
+      };
+    });
   }, []);
 
   // ---------- boot ----------
@@ -59,19 +88,11 @@ export default function Page() {
     if (!p || !p.userId) p = { userId: uid(), name: '', about: '', avatar: '' };
     setProfile(p);
     profileRef.current = p;
-    setRecent(store.get('recentRooms', []));
-    if (p.name) setScreen('lobby');
+    if (p.name) setScreen('home');
 
-    // deep link: ?room=CODE
     const params = new URLSearchParams(window.location.search);
-    const r = params.get('room');
-    if (r) {
-      setJoinCode(r.toUpperCase());
-      setTab('join');
-    }
+    const deepRoom = (params.get('room') || '').toUpperCase();
 
-    // socket.io-client is loaded only in the browser (dynamic import) so it never
-    // enters the SSR/server bundle — avoids the engine.io-client vendor-chunk error.
     let cancelled = false;
     import('socket.io-client').then(({ io }) => {
       if (cancelled) return;
@@ -79,34 +100,59 @@ export default function Page() {
       socketRef.current = socket;
 
       socket.on('message', (m) => {
-        if (!roomRef.current) return;
-        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
-      });
-      socket.on('messageDeleted', ({ id }) => {
-        setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, deleted: true, text: '', media: null } : m)));
-      });
-      socket.on('chatCleared', () => setMessages([]));
-      socket.on('presence', ({ code, members }) => {
-        if (roomRef.current && roomRef.current.code === code) setMembers(members);
-      });
-      socket.on('typing', ({ userId, name, isTyping }) => {
-        setTypingUsers((prev) => {
-          const next = { ...prev };
-          if (isTyping) next[userId] = name;
-          else delete next[userId];
-          return next;
+        setChats((prev) => {
+          const c = prev[m.code];
+          if (!c || c.messages.some((x) => x.id === m.id)) return prev;
+          const mine = m.userId === profileRef.current.userId;
+          const active = activeCodeRef.current === m.code &&
+            (typeof document === 'undefined' || document.visibilityState === 'visible');
+          const unread = mine || active || m.type === 'system' ? c.unread : c.unread + 1;
+          return { ...prev, [m.code]: { ...c, messages: [...c.messages, m], lastTs: m.ts, unread } };
         });
-        clearTimeout(typingTimeoutsRef.current[userId]);
+      });
+      socket.on('messageDeleted', ({ code, id }) => {
+        setChats((prev) => {
+          const c = prev[code];
+          if (!c) return prev;
+          return { ...prev, [code]: { ...c, messages: c.messages.map((m) => m.id === id ? { ...m, deleted: true, text: '', media: null } : m) } };
+        });
+      });
+      socket.on('chatCleared', ({ code }) => {
+        setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], messages: [] } } : prev));
+      });
+      socket.on('presence', ({ code, members }) => {
+        setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], members } } : prev));
+      });
+      socket.on('typing', ({ code, userId, name, isTyping }) => {
+        setTypingByRoom((prev) => {
+          const room = { ...(prev[code] || {}) };
+          if (isTyping) room[userId] = name; else delete room[userId];
+          return { ...prev, [code]: room };
+        });
+        const key = `${code}:${userId}`;
+        clearTimeout(typingTimeoutsRef.current[key]);
         if (isTyping) {
-          typingTimeoutsRef.current[userId] = setTimeout(() => {
-            setTypingUsers((prev) => {
-              const next = { ...prev };
-              delete next[userId];
-              return next;
+          typingTimeoutsRef.current[key] = setTimeout(() => {
+            setTypingByRoom((prev) => {
+              const room = { ...(prev[code] || {}) };
+              delete room[userId];
+              return { ...prev, [code]: room };
             });
           }, 4000);
         }
       });
+
+      // rejoin every known room so the chat list is live
+      const rec = store.get('recentRooms', []);
+      rec.forEach((r) => socket.emit('join', { code: r.code, profile: profileRef.current }, (res) => {
+        if (res?.ok) upsertChat(res); else forgetRoom(r.code);
+      }));
+
+      if (deepRoom) {
+        socket.emit('join', { code: deepRoom, profile: profileRef.current }, (res) => {
+          if (res?.ok) { upsertChat(res); rememberRoom(res.room); setActiveCode(res.room.code); activeCodeRef.current = res.room.code; }
+        });
+      }
     });
 
     return () => { cancelled = true; socketRef.current?.close(); };
@@ -114,22 +160,21 @@ export default function Page() {
   }, []);
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
-  useEffect(() => { roomRef.current = room; }, [room]);
+  useEffect(() => { activeCodeRef.current = activeCode; }, [activeCode]);
 
-  // auto scroll
+  const activeChat = activeCode ? chats[activeCode] : null;
+  const activeMsgCount = activeChat ? activeChat.messages.length : 0;
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, typingUsers]);
+  }, [activeCode, activeMsgCount, typingByRoom]);
 
-  // close header menu on outside click
   useEffect(() => {
-    if (!menuOpen) return;
-    const h = () => setMenuOpen(false);
+    if (!menuOpen && !sideMenuOpen && itemMenu === null) return;
+    const h = () => { setMenuOpen(false); setSideMenuOpen(false); setItemMenu(null); };
     document.addEventListener('click', h);
     return () => document.removeEventListener('click', h);
-  }, [menuOpen]);
+  }, [menuOpen, sideMenuOpen, itemMenu]);
 
-  // recording timer
   useEffect(() => {
     if (!recording) return;
     const t = setInterval(() => setRecSeconds((s) => s + 1), 1000);
@@ -143,19 +188,15 @@ export default function Page() {
     const p = { ...profile, name };
     store.set('profile', p);
     setProfile(p);
-    setScreen('lobby');
+    setScreen('home');
   }
-
   async function pickAvatar(file) {
     if (!file) return;
     try {
       const dataUrl = await fileToCompressedDataURL(file, 256);
       setProfile((p) => ({ ...p, avatar: dataUrl }));
-    } catch {
-      toast('Could not load that image');
-    }
+    } catch { toast('Could not load that image'); }
   }
-
   function saveProfileSettings(updated) {
     const p = { ...profile, ...updated, name: (updated.name ?? profile.name).trim() || profile.name };
     store.set('profile', p);
@@ -165,71 +206,48 @@ export default function Page() {
     toast('Profile updated');
   }
 
-  // ---------- recent rooms ----------
-  function rememberRoom(r) {
-    const list = store.get('recentRooms', []).filter((x) => x.code !== r.code);
-    list.unshift({ code: r.code, name: r.name, ts: Date.now() });
-    const trimmed = list.slice(0, 8);
-    store.set('recentRooms', trimmed);
-    setRecent(trimmed);
+  // ---------- join / create / open / leave ----------
+  function openChat(code) {
+    setActiveCode(code);
+    activeCodeRef.current = code;
+    setText(''); setReplyTo(null);
+    setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], unread: 0 } } : prev));
   }
-  function forgetRoom(code) {
-    const list = store.get('recentRooms', []).filter((x) => x.code !== code);
-    store.set('recentRooms', list);
-    setRecent(list);
-  }
-
-  // ---------- join / create ----------
-  function enterRoom(roomInfo, history, mem) {
-    setRoom(roomInfo);
-    roomRef.current = roomInfo;
-    setMessages(history || []);
-    setMembers(mem || []);
-    setReplyTo(null);
-    setText('');
-    setTypingUsers({});
-    setHiddenIds(new Set(store.get(`hidden:${roomInfo.code}`, [])));
-    setClearedAt(store.get(`cleared:${roomInfo.code}`, 0));
-    rememberRoom(roomInfo);
-    setScreen('chat');
-  }
-
   function doJoin(code) {
     setJoinError('');
     const c = (code || joinCode).toUpperCase().trim();
     if (c.length < 4) return setJoinError('Enter a valid room code');
     socketRef.current.emit('join', { code: c, profile }, (res) => {
       if (!res?.ok) return setJoinError(res?.error || 'Could not join');
-      enterRoom(res.room, res.messages, res.members);
+      upsertChat(res); rememberRoom(res.room);
+      setModal(null); setJoinCode('');
+      openChat(res.room.code);
     });
   }
-
   function doCreate() {
     const name = createName.trim() || `${profile.name}'s room`;
     socketRef.current.emit('createRoom', { name, profile }, (res) => {
       if (!res?.ok) return toast('Could not create room');
       socketRef.current.emit('join', { code: res.code, profile }, (jr) => {
         if (!jr?.ok) return toast(jr?.error || 'Could not open room');
-        enterRoom(jr.room, jr.messages, jr.members);
+        upsertChat(jr); rememberRoom(jr.room);
+        setCreateName('');
+        openChat(jr.room.code);
         setModal({ type: 'invite', code: res.code });
       });
     });
   }
-
-  function leaveRoom() {
-    socketRef.current?.emit('leave');
-    setRoom(null);
-    roomRef.current = null;
-    setMessages([]);
-    setMembers([]);
-    setMenuOpen(false);
-    setModal(null);
-    setScreen('lobby');
+  function leaveChat(code) {
+    socketRef.current?.emit('leave', { code });
+    forgetRoom(code);
+    setChats((prev) => { const n = { ...prev }; delete n[code]; return n; });
+    if (activeCodeRef.current === code) { setActiveCode(null); activeCodeRef.current = null; }
+    setModal(null); setMenuOpen(false); setItemMenu(null);
   }
 
   // ---------- sending ----------
   function emitTyping(isTyping) {
-    socketRef.current?.emit('typing', { isTyping });
+    if (activeCode) socketRef.current?.emit('typing', { code: activeCode, isTyping });
   }
   function onTextChange(v) {
     setText(v);
@@ -237,47 +255,30 @@ export default function Page() {
     clearTimeout(selfTypingRef.current);
     selfTypingRef.current = setTimeout(() => emitTyping(false), 1500);
   }
-
   function buildReplyMeta() {
     if (!replyTo) return null;
     return {
-      id: replyTo.id,
-      name: replyTo.name,
-      preview:
-        replyTo.type === 'image' ? '📷 Photo' :
-        replyTo.type === 'voice' ? '🎙️ Voice message' :
-        (replyTo.text || ''),
+      id: replyTo.id, name: replyTo.name,
+      preview: replyTo.type === 'image' ? '📷 Photo' : replyTo.type === 'voice' ? '🎙️ Voice message' : (replyTo.text || ''),
     };
   }
-
   function sendText() {
     const t = text.trim();
-    if (!t) return;
-    socketRef.current.emit('message', {
-      type: 'text', text: t, name: profile.name, avatar: profile.avatar, replyTo: buildReplyMeta(),
-    });
-    setText('');
-    setReplyTo(null);
-    emitTyping(false);
-    clearTimeout(selfTypingRef.current);
+    if (!t || !activeCode) return;
+    socketRef.current.emit('message', { code: activeCode, type: 'text', text: t, name: profile.name, avatar: profile.avatar, replyTo: buildReplyMeta() });
+    setText(''); setReplyTo(null); emitTyping(false); clearTimeout(selfTypingRef.current);
   }
-
   async function sendImage(file) {
-    if (!file) return;
+    if (!file || !activeCode) return;
     try {
       toast('Uploading…');
       const media = await uploadFile(file);
-      socketRef.current.emit('message', {
-        type: 'image', media, text: text.trim(), name: profile.name, avatar: profile.avatar, replyTo: buildReplyMeta(),
-      });
-      setText('');
-      setReplyTo(null);
-    } catch (e) {
-      toast(e.message || 'Upload failed');
-    }
+      socketRef.current.emit('message', { code: activeCode, type: 'image', media, text: text.trim(), name: profile.name, avatar: profile.avatar, replyTo: buildReplyMeta() });
+      setText(''); setReplyTo(null);
+    } catch (e) { toast(e.message || 'Upload failed'); }
   }
 
-  // ---------- voice notes ----------
+  // ---------- voice ----------
   async function startRecording() {
     if (!navigator.mediaDevices?.getUserMedia) return toast('Recording not supported here');
     try {
@@ -291,66 +292,60 @@ export default function Page() {
       recorder.ondataavailable = (e) => { if (e.data && e.data.size) mediaRef.current.chunks.push(e.data); };
       recorder.onstop = onRecordingStop;
       recorder.start();
-      setRecSeconds(0);
-      setRecording(true);
-    } catch {
-      toast('Microphone blocked. Use http://localhost or HTTPS and allow access.');
-    }
+      setRecSeconds(0); setRecording(true);
+    } catch { toast('Microphone blocked. Use http://localhost or HTTPS and allow access.'); }
   }
-
   async function onRecordingStop() {
     const { chunks, stream, recorder, send, startTime } = mediaRef.current;
     stream?.getTracks().forEach((t) => t.stop());
     const duration = Math.max(1, Math.round((Date.now() - (startTime || Date.now())) / 1000));
     setRecording(false);
-    if (!send || !chunks.length) return;
+    if (!send || !chunks.length || !activeCodeRef.current) return;
     try {
       const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
       toast('Sending voice note…');
       const media = await uploadFile(blob, `voice-${Date.now()}.webm`);
       media.duration = duration;
-      socketRef.current.emit('message', {
-        type: 'voice', media, name: profile.name, avatar: profile.avatar, replyTo: buildReplyMeta(),
-      });
+      socketRef.current.emit('message', { code: activeCodeRef.current, type: 'voice', media, name: profile.name, avatar: profile.avatar, replyTo: buildReplyMeta() });
       setReplyTo(null);
-    } catch (e) {
-      toast(e.message || 'Could not send voice note');
-    }
+    } catch (e) { toast(e.message || 'Could not send voice note'); }
   }
-
   function stopRecording(send) {
     mediaRef.current.send = send;
     try { mediaRef.current.recorder?.stop(); } catch {}
   }
 
   // ---------- delete / clear ----------
-  function deleteForMe(id) {
-    setHiddenIds((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      store.set(`hidden:${room.code}`, [...next]);
-      return next;
+  function deleteForMe(code, id) {
+    setChats((prev) => {
+      const c = prev[code]; if (!c) return prev;
+      const hidden = new Set(c.hidden); hidden.add(id);
+      store.set(`hidden:${code}`, [...hidden]);
+      return { ...prev, [code]: { ...c, hidden } };
     });
     setModal(null);
   }
-  function deleteForEveryone(id) {
-    socketRef.current.emit('deleteMessage', { id });
+  function deleteForEveryone(code, id) {
+    socketRef.current.emit('deleteMessage', { code, id });
     setModal(null);
   }
-  function clearChatLocal() {
+  function clearChatLocal(code) {
     const ts = Date.now();
-    store.set(`cleared:${room.code}`, ts);
-    setClearedAt(ts);
-    setMenuOpen(false);
+    store.set(`cleared:${code}`, ts);
+    setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], clearedAt: ts } } : prev));
+    setMenuOpen(false); setItemMenu(null);
     toast('Chat cleared on this device');
   }
-  function clearChatEveryone() {
-    socketRef.current.emit('clearChat', null, (res) => {
+  function clearChatEveryone(code) {
+    socketRef.current.emit('clearChat', { code }, (res) => {
       if (!res?.ok) return toast(res?.error || 'Not allowed');
       toast('Chat deleted for everyone');
     });
-    setModal(null);
-    setMenuOpen(false);
+    setModal(null); setMenuOpen(false);
+  }
+  function markRead(code) {
+    setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], unread: 0 } } : prev));
+    setItemMenu(null);
   }
 
   function copy(textToCopy, label) {
@@ -358,9 +353,26 @@ export default function Page() {
   }
 
   // ---------- derived ----------
-  const visibleMessages = messages.filter((m) => !hiddenIds.has(m.id) && m.ts > clearedAt);
+  const sortedChats = Object.values(chats).sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
+  const visibleMessages = activeChat
+    ? activeChat.messages.filter((m) => !activeChat.hidden.has(m.id) && m.ts > activeChat.clearedAt)
+    : [];
+  const members = activeChat?.members || [];
   const onlineCount = members.filter((m) => m.online).length;
-  const othersTyping = Object.entries(typingUsers).filter(([id]) => id !== profile.userId).map(([, n]) => n);
+  const activeTyping = activeCode && typingByRoom[activeCode]
+    ? Object.entries(typingByRoom[activeCode]).filter(([id]) => id !== profile.userId).map(([, n]) => n)
+    : [];
+
+  function lastPreview(chat) {
+    const msgs = chat.messages.filter((m) => !chat.hidden.has(m.id) && m.ts > chat.clearedAt);
+    const m = msgs[msgs.length - 1];
+    if (!m) return { text: 'No messages yet', ts: chat.lastTs, muted: true };
+    if (m.type === 'system') return { text: m.text, ts: m.ts, muted: true };
+    if (m.deleted) return { text: '🚫 message deleted', ts: m.ts, muted: true };
+    const who = m.userId === profile.userId ? 'You: ' : (chat.members.length > 2 ? `${(m.name || '').split(' ')[0]}: ` : '');
+    const body = m.type === 'image' ? '📷 Photo' : m.type === 'voice' ? '🎙️ Voice message' : m.text;
+    return { text: who + body, ts: m.ts };
+  }
 
   if (!mounted) return null;
 
@@ -392,177 +404,212 @@ export default function Page() {
         </section>
       )}
 
-      {/* ================= LOBBY ================= */}
-      {screen === 'lobby' && (
-        <section className="screen center-screen">
-          <div className="card">
-            <div className="lobby-me" onClick={() => setModal({ type: 'profile' })}>
-              <Avatar src={profile.avatar} name={profile.name} size={52} />
-              <div>
-                <div className="strong">{profile.name}</div>
-                <div className="muted tiny">{profile.about || 'Tap to edit profile'}</div>
+      {/* ================= HOME (sidebar + conversation) ================= */}
+      {screen === 'home' && (
+        <section className={`screen home ${activeCode ? 'show-conversation' : ''}`}>
+          {/* ----- Sidebar ----- */}
+          <aside className="sidebar">
+            <header className="sidebar-header">
+              <div className="me" onClick={() => setModal({ type: 'profile' })} title="Profile settings">
+                <Avatar src={profile.avatar} name={profile.name} size={40} />
+                <span className="strong">{profile.name}</span>
               </div>
-            </div>
+              <button className="icon-btn" title="New chat" onClick={() => { setJoinError(''); setModal({ type: 'newchat' }); }}>✏️</button>
+              <button className="icon-btn" title="Menu" onClick={(e) => { e.stopPropagation(); setSideMenuOpen((v) => !v); }}>⋮</button>
+              {sideMenuOpen && (
+                <div className="menu side" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'profile' }); }}>⚙️ Profile settings</button>
+                  <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'newchat' }); }}>➕ New chat</button>
+                </div>
+              )}
+            </header>
 
-            <div className="tabs">
-              <button className={`tab ${tab === 'join' ? 'active' : ''}`} onClick={() => setTab('join')}>Join a room</button>
-              <button className={`tab ${tab === 'create' ? 'active' : ''}`} onClick={() => setTab('create')}>Create a room</button>
+            <div className="chat-list">
+              {sortedChats.length === 0 && (
+                <div className="empty-list">
+                  <p>No chats yet.</p>
+                  <button className="btn primary" onClick={() => setModal({ type: 'newchat' })}>Start a chat</button>
+                </div>
+              )}
+              {sortedChats.map((chat) => {
+                const code = chat.info.code;
+                const pv = lastPreview(chat);
+                const typing = typingByRoom[code] && Object.keys(typingByRoom[code]).some((id) => id !== profile.userId);
+                return (
+                  <div key={code} className={`chat-item ${activeCode === code ? 'active' : ''}`} onClick={() => openChat(code)}>
+                    <div className="chat-item-avatar">{(chat.info.name || '#')[0].toUpperCase()}</div>
+                    <div className="chat-item-body">
+                      <div className="chat-item-top">
+                        <span className="nm strong">{chat.info.name}</span>
+                        <span className="chat-item-time">{shortStamp(pv.ts)}</span>
+                      </div>
+                      <div className="chat-item-bottom">
+                        <span className={`chat-item-preview ${pv.muted ? 'muted' : ''}`}>
+                          {typing ? <em style={{ color: 'var(--accent)' }}>typing…</em> : pv.text}
+                        </span>
+                        {chat.unread > 0 && <span className="unread">{chat.unread}</span>}
+                      </div>
+                    </div>
+                    <button className="chat-item-kebab icon-btn" title="Options"
+                      onClick={(e) => { e.stopPropagation(); setItemMenu(itemMenu === code ? null : code); }}>⋮</button>
+                    {itemMenu === code && (
+                      <div className="menu item-menu" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => { openChat(code); setItemMenu(null); }}>💬 Open</button>
+                        <button onClick={() => markRead(code)}>✓ Mark as read</button>
+                        <button onClick={() => setModal({ type: 'invite', code })}>🔗 Invite code</button>
+                        <button onClick={() => clearChatLocal(code)}>🧹 Clear chat</button>
+                        <button className="danger" onClick={() => setModal({ type: 'confirmLeave', code })}>🚪 Leave chat</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+          </aside>
 
-            {tab === 'join' ? (
-              <div>
-                <label className="field">
-                  <span>Invite / Room code</span>
-                  <input value={joinCode} maxLength={6} placeholder="ABC123"
-                    style={{ textTransform: 'uppercase', letterSpacing: 4, fontWeight: 700 }}
-                    onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                    onKeyDown={(e) => e.key === 'Enter' && doJoin()} />
-                </label>
-                <button className="btn primary block" onClick={() => doJoin()}>Join room</button>
-                <p className="error">{joinError}</p>
+          {/* ----- Conversation ----- */}
+          <main className="conversation">
+            {!activeChat ? (
+              <div className="no-chat">
+                <div className="no-chat-inner">
+                  <div className="brand-logo">💬</div>
+                  <h2>ChatRoom</h2>
+                  <p className="muted">Select a chat to start messaging, or create a new room and share the code.</p>
+                  <button className="btn primary" onClick={() => setModal({ type: 'newchat' })}>New chat</button>
+                </div>
               </div>
             ) : (
-              <div>
-                <label className="field">
-                  <span>Room name</span>
-                  <input value={createName} maxLength={60} placeholder="e.g. Family group"
-                    onChange={(e) => setCreateName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && doCreate()} />
-                </label>
-                <button className="btn primary block" onClick={doCreate}>Create &amp; get code</button>
-              </div>
-            )}
-
-            {recent.length > 0 && (
-              <div className="recent">
-                <h4>Recent rooms</h4>
-                {recent.map((r) => (
-                  <div className="recent-item" key={r.code} onClick={() => doJoin(r.code)}>
-                    <div className="recent-avatar">{(r.name || '#')[0].toUpperCase()}</div>
-                    <div className="recent-meta">
-                      <div className="nm strong">{r.name}</div>
-                      <div className="code">Code: {r.code}</div>
+              <>
+                <header className="chat-header">
+                  <button className="icon-btn back conv-back" onClick={() => { setActiveCode(null); activeCodeRef.current = null; }} title="Back">‹</button>
+                  <div className="chat-title" onClick={() => setModal({ type: 'members', code: activeCode })}>
+                    <div className="chat-room-avatar">{(activeChat.info.name || '#')[0].toUpperCase()}</div>
+                    <div className="chat-title-text">
+                      <div className="nm strong">{activeChat.info.name}</div>
+                      <div className="muted tiny">
+                        {activeTyping.length ? `${activeTyping[0]} is typing…`
+                          : `${members.length} member${members.length === 1 ? '' : 's'}, ${onlineCount} online`}
+                      </div>
                     </div>
-                    <button className="recent-del" title="Remove"
-                      onClick={(e) => { e.stopPropagation(); forgetRoom(r.code); }}>×</button>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* ================= CHAT ================= */}
-      {screen === 'chat' && room && (
-        <section className="screen chat">
-          <header className="chat-header">
-            <button className="icon-btn back" onClick={leaveRoom} title="Back">‹</button>
-            <div className="chat-title" onClick={() => setModal({ type: 'members' })}>
-              <div className="chat-room-avatar">{(room.name || '#')[0].toUpperCase()}</div>
-              <div className="chat-title-text">
-                <div className="nm strong">{room.name}</div>
-                <div className="muted tiny">
-                  {othersTyping.length ? `${othersTyping[0]} is typing…`
-                    : `${members.length} member${members.length === 1 ? '' : 's'}, ${onlineCount} online`}
-                </div>
-              </div>
-            </div>
-            <button className="icon-btn" title="Invite" onClick={() => setModal({ type: 'invite', code: room.code })}>🔗</button>
-            <button className="icon-btn" title="Menu"
-              onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}>⋮</button>
-            {menuOpen && (
-              <div className="menu" onClick={(e) => e.stopPropagation()}>
-                <button onClick={() => { setMenuOpen(false); setModal({ type: 'members' }); }}>👥 Members</button>
-                <button onClick={() => { setMenuOpen(false); setModal({ type: 'invite', code: room.code }); }}>🔗 Share invite code</button>
-                <button onClick={clearChatLocal}>🧹 Clear chat (only me)</button>
-                <button className="danger" onClick={() => { setMenuOpen(false); setModal({ type: 'confirmClearAll' }); }}>🗑️ Delete chat for everyone</button>
-                <button onClick={() => { setMenuOpen(false); setModal({ type: 'profile' }); }}>⚙️ Profile settings</button>
-                <button onClick={leaveRoom}>🚪 Leave room</button>
-              </div>
-            )}
-          </header>
-
-          <div className="messages">
-            {visibleMessages.length === 0 && (
-              <div className="system-msg">No messages yet. Say hi! 👋</div>
-            )}
-            {visibleMessages.map((m, i) => {
-              const prev = visibleMessages[i - 1];
-              const showDay = !prev || dayKey(prev.ts) !== dayKey(m.ts);
-              return (
-                <div key={m.id}>
-                  {showDay && <div className="day-sep">{dayLabel(m.ts)}</div>}
-                  {m.type === 'system' ? (
-                    <div className="system-msg">{m.text}</div>
-                  ) : (
-                    <MessageBubble
-                      m={m}
-                      me={profile.userId}
-                      isGroup={members.length > 2}
-                      onReply={() => setReplyTo(m)}
-                      onDelete={() => setModal({ type: 'deleteMsg', m })}
-                      onImage={(src) => setLightbox(src)}
-                    />
+                  <button className="icon-btn" title="Invite" onClick={() => setModal({ type: 'invite', code: activeCode })}>🔗</button>
+                  <button className="icon-btn" title="Menu" onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}>⋮</button>
+                  {menuOpen && (
+                    <div className="menu" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setMenuOpen(false); setModal({ type: 'members', code: activeCode }); }}>👥 Members</button>
+                      <button onClick={() => { setMenuOpen(false); setModal({ type: 'invite', code: activeCode }); }}>🔗 Share invite code</button>
+                      <button onClick={() => clearChatLocal(activeCode)}>🧹 Clear chat (only me)</button>
+                      <button className="danger" onClick={() => { setMenuOpen(false); setModal({ type: 'confirmClearAll', code: activeCode }); }}>🗑️ Delete chat for everyone</button>
+                      <button onClick={() => { setMenuOpen(false); setModal({ type: 'profile' }); }}>⚙️ Profile settings</button>
+                      <button className="danger" onClick={() => setModal({ type: 'confirmLeave', code: activeCode })}>🚪 Leave room</button>
+                    </div>
                   )}
+                </header>
+
+                <div className="messages">
+                  {visibleMessages.length === 0 && <div className="system-msg">No messages yet. Say hi! 👋</div>}
+                  {visibleMessages.map((m, i) => {
+                    const prev = visibleMessages[i - 1];
+                    const showDay = !prev || dayKey(prev.ts) !== dayKey(m.ts);
+                    return (
+                      <div key={m.id}>
+                        {showDay && <div className="day-sep">{dayLabel(m.ts)}</div>}
+                        {m.type === 'system' ? (
+                          <div className="system-msg">{m.text}</div>
+                        ) : (
+                          <MessageBubble
+                            m={m} me={profile.userId} isGroup={members.length > 2}
+                            onReply={() => setReplyTo(m)}
+                            onDelete={() => setModal({ type: 'deleteMsg', code: activeCode, m })}
+                            onImage={(src) => setLightbox(src)}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div ref={messagesEndRef} />
                 </div>
-              );
-            })}
-            <div ref={messagesEndRef} />
-          </div>
 
-          {othersTyping.length > 0 && (
-            <div className="typing">{othersTyping.join(', ')} {othersTyping.length === 1 ? 'is' : 'are'} typing…</div>
-          )}
+                {activeTyping.length > 0 && (
+                  <div className="typing">{activeTyping.join(', ')} {activeTyping.length === 1 ? 'is' : 'are'} typing…</div>
+                )}
 
-          {replyTo && (
-            <div className="reply-bar">
-              <div className="reply-bar-text">
-                <span className="reply-bar-name">{replyTo.name}</span>
-                <span className="reply-bar-body">
-                  {replyTo.type === 'image' ? '📷 Photo' : replyTo.type === 'voice' ? '🎙️ Voice message' : replyTo.text}
-                </span>
-              </div>
-              <button className="icon-btn" onClick={() => setReplyTo(null)}>✕</button>
-            </div>
-          )}
+                {replyTo && (
+                  <div className="reply-bar">
+                    <div className="reply-bar-text">
+                      <span className="reply-bar-name">{replyTo.name}</span>
+                      <span className="reply-bar-body">
+                        {replyTo.type === 'image' ? '📷 Photo' : replyTo.type === 'voice' ? '🎙️ Voice message' : replyTo.text}
+                      </span>
+                    </div>
+                    <button className="icon-btn" onClick={() => setReplyTo(null)}>✕</button>
+                  </div>
+                )}
 
-          {recording ? (
-            <div className="recording-bar">
-              <div className="rec-dot" />
-              <span>{fmtDuration(recSeconds)}</span>
-              <span className="muted">Recording…</span>
-              <span className="spacer" />
-              <button className="btn ghost small" onClick={() => stopRecording(false)}>Cancel</button>
-              <button className="btn primary small" onClick={() => stopRecording(true)}>Send</button>
-            </div>
-          ) : (
-            <footer className="composer">
-              <button className="icon-btn" title="Attach image" onClick={() => fileInputRef.current?.click()}>📎</button>
-              <input ref={fileInputRef} type="file" accept="image/*" hidden
-                onChange={(e) => { sendImage(e.target.files[0]); e.target.value = ''; }} />
-              <textarea
-                rows={1}
-                placeholder="Type a message"
-                value={text}
-                onChange={(e) => onTextChange(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
-                }}
-              />
-              {text.trim() ? (
-                <button className="icon-btn round send" title="Send" onClick={sendText}>➤</button>
-              ) : (
-                <button className="icon-btn round" title="Record voice note" onClick={startRecording}>🎙️</button>
-              )}
-            </footer>
-          )}
+                {recording ? (
+                  <div className="recording-bar">
+                    <div className="rec-dot" />
+                    <span>{fmtDuration(recSeconds)}</span>
+                    <span className="muted">Recording…</span>
+                    <span className="spacer" />
+                    <button className="btn ghost small" onClick={() => stopRecording(false)}>Cancel</button>
+                    <button className="btn primary small" onClick={() => stopRecording(true)}>Send</button>
+                  </div>
+                ) : (
+                  <footer className="composer">
+                    <button className="icon-btn" title="Attach image" onClick={() => fileInputRef.current?.click()}>📎</button>
+                    <input ref={fileInputRef} type="file" accept="image/*" hidden
+                      onChange={(e) => { sendImage(e.target.files[0]); e.target.value = ''; }} />
+                    <textarea rows={1} placeholder="Type a message" value={text}
+                      onChange={(e) => onTextChange(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); } }} />
+                    {text.trim()
+                      ? <button className="icon-btn round send" title="Send" onClick={sendText}>➤</button>
+                      : <button className="icon-btn round" title="Record voice note" onClick={startRecording}>🎙️</button>}
+                  </footer>
+                )}
+              </>
+            )}
+          </main>
         </section>
       )}
 
       {/* ================= MODALS ================= */}
       {modal && (
         <ModalRoot onClose={() => setModal(null)}>
+          {modal.type === 'newchat' && (
+            <div>
+              <h3>New chat</h3>
+              <div className="tabs">
+                <button className={`tab ${tab === 'join' ? 'active' : ''}`} onClick={() => setTab('join')}>Join by code</button>
+                <button className={`tab ${tab === 'create' ? 'active' : ''}`} onClick={() => setTab('create')}>Create room</button>
+              </div>
+              {tab === 'join' ? (
+                <div>
+                  <label className="field">
+                    <span>Invite / Room code</span>
+                    <input value={joinCode} maxLength={6} placeholder="ABC123" autoFocus
+                      style={{ textTransform: 'uppercase', letterSpacing: 4, fontWeight: 700 }}
+                      onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                      onKeyDown={(e) => e.key === 'Enter' && doJoin()} />
+                  </label>
+                  <button className="btn primary block" onClick={() => doJoin()}>Join room</button>
+                  <p className="error">{joinError}</p>
+                </div>
+              ) : (
+                <div>
+                  <label className="field">
+                    <span>Room name</span>
+                    <input value={createName} maxLength={60} placeholder="e.g. Family group" autoFocus
+                      onChange={(e) => setCreateName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && doCreate()} />
+                  </label>
+                  <button className="btn primary block" onClick={doCreate}>Create &amp; get code</button>
+                </div>
+              )}
+            </div>
+          )}
+
           {modal.type === 'invite' && (
             <div>
               <h3>Invite people</h3>
@@ -575,15 +622,15 @@ export default function Page() {
             </div>
           )}
 
-          {modal.type === 'members' && (
+          {modal.type === 'members' && chats[modal.code] && (
             <div>
-              <h3>Members ({members.length})</h3>
+              <h3>Members ({chats[modal.code].members.length})</h3>
               <div>
-                {members.map((m) => (
+                {chats[modal.code].members.map((m) => (
                   <div className="member-row" key={m.userId}>
                     <Avatar src={m.avatar} name={m.name} size={42} />
                     <div className="who">
-                      <div className="nm strong">{m.name}{m.userId === profile.userId ? ' (you)' : ''}{room.ownerId === m.userId ? ' • admin' : ''}</div>
+                      <div className="nm strong">{m.name}{m.userId === profile.userId ? ' (you)' : ''}{chats[modal.code].info.ownerId === m.userId ? ' • admin' : ''}</div>
                       <div className="muted tiny">{m.online ? 'online' : lastSeenLabel(m.lastSeen)}</div>
                     </div>
                     <div className={`dot ${m.online ? 'on' : 'off'}`} />
@@ -602,10 +649,10 @@ export default function Page() {
               <h3>Delete message?</h3>
               <p className="muted">This can't be undone.</p>
               <div className="modal-actions" style={{ flexDirection: 'column' }}>
-                <button className="btn ghost" onClick={() => deleteForMe(modal.m.id)}>Delete for me</button>
-                {modal.m.userId === profile.userId || room.ownerId === profile.userId ? (
-                  <button className="btn danger" onClick={() => deleteForEveryone(modal.m.id)}>Delete for everyone</button>
-                ) : null}
+                <button className="btn ghost" onClick={() => deleteForMe(modal.code, modal.m.id)}>Delete for me</button>
+                {(modal.m.userId === profile.userId || chats[modal.code]?.info.ownerId === profile.userId) && (
+                  <button className="btn danger" onClick={() => deleteForEveryone(modal.code, modal.m.id)}>Delete for everyone</button>
+                )}
                 <button className="btn ghost" onClick={() => setModal(null)}>Cancel</button>
               </div>
             </div>
@@ -617,7 +664,18 @@ export default function Page() {
               <p className="muted">All messages in this room will be permanently removed for all members.</p>
               <div className="modal-actions">
                 <button className="btn ghost" onClick={() => setModal(null)}>Cancel</button>
-                <button className="btn danger" onClick={clearChatEveryone}>Delete</button>
+                <button className="btn danger" onClick={() => clearChatEveryone(modal.code)}>Delete</button>
+              </div>
+            </div>
+          )}
+
+          {modal.type === 'confirmLeave' && (
+            <div>
+              <h3>Leave this chat?</h3>
+              <p className="muted">It will be removed from your chat list. You can rejoin later with the code.</p>
+              <div className="modal-actions">
+                <button className="btn ghost" onClick={() => setModal(null)}>Cancel</button>
+                <button className="btn danger" onClick={() => leaveChat(modal.code)}>Leave</button>
               </div>
             </div>
           )}
@@ -625,9 +683,7 @@ export default function Page() {
       )}
 
       {lightbox && (
-        <div className="lightbox" onClick={() => setLightbox('')}>
-          <img src={lightbox} alt="" />
-        </div>
+        <div className="lightbox" onClick={() => setLightbox('')}><img src={lightbox} alt="" /></div>
       )}
 
       <div className={`toast ${toastMsg ? 'show' : ''}`}>{toastMsg}</div>
@@ -637,7 +693,7 @@ export default function Page() {
 
 /* ===================== sub components ===================== */
 
-function AvatarPicker({ avatar, name, onPick }) {
+function AvatarPicker({ avatar, onPick }) {
   const ref = useRef(null);
   return (
     <div className="avatar-picker">
@@ -657,14 +713,12 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
     <div className={`msg-row ${out ? 'out' : 'in'}`}>
       <div className={`bubble ${m.deleted ? 'deleted' : ''}`}>
         {!out && isGroup && !m.deleted && <div className="sender">{m.name}</div>}
-
         {!m.deleted && (
           <div className="msg-actions">
             <button title="Reply" onClick={onReply}>↩</button>
             <button title="Delete" onClick={onDelete}>🗑</button>
           </div>
         )}
-
         {m.deleted ? (
           <div className="text">🚫 This message was deleted</div>
         ) : (
@@ -675,15 +729,9 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
                 <span className="rq-body">{m.replyTo.preview}</span>
               </div>
             )}
-            {m.type === 'image' && m.media && (
-              <img className="photo" src={m.media.url} alt="" onClick={() => onImage(m.media.url)} />
-            )}
-            {m.type === 'voice' && m.media && (
-              <VoiceNote src={m.media.url} duration={m.media.duration} />
-            )}
-            {m.type === 'file' && m.media && (
-              <a className="file-link" href={m.media.url} download={m.media.name} target="_blank" rel="noreferrer">📄 {m.media.name}</a>
-            )}
+            {m.type === 'image' && m.media && <img className="photo" src={m.media.url} alt="" onClick={() => onImage(m.media.url)} />}
+            {m.type === 'voice' && m.media && <VoiceNote src={m.media.url} duration={m.media.duration} />}
+            {m.type === 'file' && m.media && <a className="file-link" href={m.media.url} download={m.media.name} target="_blank" rel="noreferrer">📄 {m.media.name}</a>}
             {m.text && <div className={`text ${m.type === 'image' ? 'caption' : ''}`}>{m.text}</div>}
           </>
         )}
@@ -700,14 +748,10 @@ function ProfileSettings({ profile, onPick, onSave, onClose }) {
     <div>
       <h3>Profile settings</h3>
       <AvatarPicker avatar={profile.avatar} name={profile.name} onPick={onPick} />
-      <label className="field">
-        <span>Name</span>
-        <input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className="field">
-        <span>About</span>
-        <input value={about} maxLength={80} onChange={(e) => setAbout(e.target.value)} />
-      </label>
+      <label className="field"><span>Name</span>
+        <input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} /></label>
+      <label className="field"><span>About</span>
+        <input value={about} maxLength={80} onChange={(e) => setAbout(e.target.value)} /></label>
       <div className="modal-actions">
         <button className="btn ghost" onClick={onClose}>Cancel</button>
         <button className="btn primary" onClick={() => onSave({ name, about, avatar: profile.avatar })}>Save</button>

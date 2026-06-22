@@ -39,6 +39,14 @@ export function fmtDuration(sec) {
   return `${m}:${s}`;
 }
 
+export function shortStamp(ts) {
+  if (!ts) return '';
+  const now = Date.now();
+  if (dayKey(ts) === dayKey(now)) return formatTime(ts);
+  if (dayKey(ts) === dayKey(now - 86400000)) return 'Yesterday';
+  return new Date(ts).toLocaleDateString(undefined, { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
 export function lastSeenLabel(ts) {
   if (!ts) return 'offline';
   const diff = Date.now() - ts;
