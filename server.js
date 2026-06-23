@@ -97,6 +97,10 @@ app.prepare().then(() => {
     // Join a room (may be called several times — one socket can hold many rooms)
     socket.on('join', ({ code, profile }, ack) => {
       code = String(code || '').toUpperCase().trim();
+      if (!profile || !profile.userId) {
+        ack && ack({ ok: false, error: 'Invalid profile.' });
+        return;
+      }
       const room = getRoom(code);
       if (!room) {
         ack && ack({ ok: false, error: 'Room not found. Check the code and try again.' });

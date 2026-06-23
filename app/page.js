@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, Fragment } from 'react';
 import Avatar from './components/Avatar';
 import VoiceNote from './components/VoiceNote';
 import {
@@ -142,14 +142,16 @@ export default function Page() {
         }
       });
 
-      // rejoin every known room so the chat list is live
+      // rejoin every known room so the chat list is live.
+      // Use the local `p` (not profileRef) — the ref can be transiently reset to the
+      // initial empty profile by the [profile] effect before this async callback runs.
       const rec = store.get('recentRooms', []);
-      rec.forEach((r) => socket.emit('join', { code: r.code, profile: profileRef.current }, (res) => {
+      rec.forEach((r) => socket.emit('join', { code: r.code, profile: p }, (res) => {
         if (res?.ok) upsertChat(res); else forgetRoom(r.code);
       }));
 
       if (deepRoom) {
-        socket.emit('join', { code: deepRoom, profile: profileRef.current }, (res) => {
+        socket.emit('join', { code: deepRoom, profile: p }, (res) => {
           if (res?.ok) { upsertChat(res); rememberRoom(res.room); setActiveCode(res.room.code); activeCodeRef.current = res.room.code; }
         });
       }
@@ -512,7 +514,7 @@ export default function Page() {
                     const prev = visibleMessages[i - 1];
                     const showDay = !prev || dayKey(prev.ts) !== dayKey(m.ts);
                     return (
-                      <div key={m.id}>
+                      <Fragment key={m.id}>
                         {showDay && <div className="day-sep">{dayLabel(m.ts)}</div>}
                         {m.type === 'system' ? (
                           <div className="system-msg">{m.text}</div>
@@ -524,7 +526,7 @@ export default function Page() {
                             onImage={(src) => setLightbox(src)}
                           />
                         )}
-                      </div>
+                      </Fragment>
                     );
                   })}
                   <div ref={messagesEndRef} />

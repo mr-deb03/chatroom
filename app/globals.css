@@ -105,7 +105,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .recent-del { margin-left: auto; color: var(--muted); background: none; border: none; cursor: pointer; font-size: 18px; flex: none; }
 
 /* ---------- Home: two-pane (sidebar + conversation) ---------- */
-.home { display: flex; height: 100%; }
+.home { display: flex; flex-direction: row; height: 100%; }
 .sidebar {
   width: 30%; min-width: 300px; max-width: 420px;
   background: var(--panel); border-right: 1px solid #0a1216;
@@ -153,7 +153,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .no-chat { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; }
 .no-chat-inner { max-width: 380px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .no-chat-inner .brand-logo { font-size: 64px; }
-.conv-back { display: none; }
+.icon-btn.conv-back { display: none; }
 
 /* ---------- Chat ---------- */
 .chat-header { display: flex; align-items: center; gap: 6px; background: var(--header); padding: 8px; position: relative; z-index: 5; }
@@ -259,7 +259,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
   .conversation { display: none; }
   .home.show-conversation .sidebar { display: none; }
   .home.show-conversation .conversation { display: flex; }
-  .conv-back { display: flex; }
+  .icon-btn.conv-back { display: flex; }
   .messages { padding: 14px 10px; }
 }
 
