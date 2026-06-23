@@ -735,7 +735,7 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
   const out = m.userId === me;
   return (
     <div className={`msg-row ${out ? 'out' : 'in'}`}>
-      <div className={`bubble ${m.deleted ? 'deleted' : ''}`}>
+      <div className={`bubble ${m.deleted ? 'deleted' : ''} ${m.type === 'image' && m.media && !m.deleted ? 'image' : ''}`}>
         {!out && isGroup && !m.deleted && <div className="sender">{m.name}</div>}
         {!m.deleted && (
           <div className="msg-actions">

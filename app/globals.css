@@ -188,8 +188,14 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .msg-row.out .bubble .meta { color: #a7c9bf; }
 .bubble.deleted .text { font-style: italic; color: var(--muted); }
 
-.bubble img.photo { max-width: 260px; max-height: 320px; border-radius: 8px; display: block; cursor: pointer; }
+.bubble img.photo { max-width: 280px; max-height: 340px; border-radius: 8px; display: block; cursor: pointer; }
 .bubble .caption { margin-top: 4px; }
+
+/* Image messages: thin frame so the photo sits almost edge-to-edge */
+.bubble.image { padding: 3px; }
+.bubble.image img.photo { border-radius: 7px; }
+.bubble.image .caption { padding: 1px 6px 2px; }
+.bubble.image .meta { margin: 2px 6px 1px 8px; }
 .bubble .file-link { color: var(--accent); text-decoration: none; display: inline-flex; gap: 6px; align-items: center; }
 
 .reply-quote { border-left: 3px solid var(--accent); background: rgba(0, 0, 0, .18); border-radius: 6px; padding: 4px 8px; margin-bottom: 5px; font-size: 13px; }
