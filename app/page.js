@@ -34,6 +34,9 @@ export default function Page() {
   const [iosCapable, setIosCapable] = useState(false); // iOS Safari, not yet installed
   const [bannerOpen, setBannerOpen] = useState(false); // install banner visibility
 
+  // Notifications
+  const [notifEnabled, setNotifEnabled] = useState(false); // sound + OS notifications for incoming messages
+
   // new-chat modal fields
   const [tab, setTab] = useState('join');
   const [joinCode, setJoinCode] = useState('');
@@ -47,6 +50,8 @@ export default function Page() {
   const socketRef = useRef(null);
   const profileRef = useRef(profile);
   const activeCodeRef = useRef(null);
+  const chatsRef = useRef({});
+  const notifyRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const typingTimeoutsRef = useRef({});
@@ -101,6 +106,18 @@ export default function Page() {
     setTheme(savedTheme);
     applyTheme(savedTheme);
 
+    // Notifications: enable if the user opted in before and the browser still allows it.
+    const wantNotif = store.get('notifEnabled', true);
+    if (typeof Notification !== 'undefined') {
+      if (Notification.permission === 'granted') {
+        setNotifEnabled(wantNotif);
+      } else if (Notification.permission === 'default' && wantNotif) {
+        Notification.requestPermission().then((perm) => {
+          if (perm === 'granted') { setNotifEnabled(true); store.set('notifEnabled', true); }
+        }).catch(() => {});
+      }
+    }
+
     // Register the service worker so the app is installable on mobile
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -116,15 +133,18 @@ export default function Page() {
       socketRef.current = socket;
 
       socket.on('message', (m) => {
+        let isNew = false;
         setChats((prev) => {
           const c = prev[m.code];
           if (!c || c.messages.some((x) => x.id === m.id)) return prev;
+          isNew = true;
           const mine = m.userId === profileRef.current.userId;
           const active = activeCodeRef.current === m.code &&
             (typeof document === 'undefined' || document.visibilityState === 'visible');
           const unread = mine || active || m.type === 'system' ? c.unread : c.unread + 1;
           return { ...prev, [m.code]: { ...c, messages: [...c.messages, m], lastTs: m.ts, unread } };
         });
+        if (isNew) notifyRef.current?.(m);
       });
       socket.on('messageDeleted', ({ code, id }) => {
         setChats((prev) => {
@@ -202,6 +222,34 @@ export default function Page() {
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
   useEffect(() => { activeCodeRef.current = activeCode; }, [activeCode]);
+  useEffect(() => { chatsRef.current = chats; }, [chats]);
+
+  // Keep the notifier closure fresh (latest chats / active chat / preference) so the
+  // once-bound socket handler can always call notifyRef.current(message).
+  useEffect(() => {
+    notifyRef.current = (m) => {
+      if (!m || m.type === 'system' || m.userId === profile.userId) return;
+      const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible';
+      const lookingHere = activeCode === m.code && !hidden;
+      if (lookingHere) return;           // user is already reading this chat
+      if (!notifEnabled) return;
+      playPing();                        // in-app sound for a message you didn't see
+      if (!hidden) return;               // only raise an OS notification when the tab isn't focused
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+      const chat = chatsRef.current[m.code];
+      const room = chat?.info?.name || 'ChatRoom';
+      const sender = (m.name || 'Someone').split(' ')[0];
+      const body = m.type === 'image' ? '📷 Photo' : m.type === 'voice' ? '🎙️ Voice message' : (m.text || '');
+      const isGroup = (chat?.members?.length || 0) > 2;
+      try {
+        const n = new Notification(isGroup ? room : sender, {
+          body: isGroup ? `${sender}: ${body}` : body,
+          tag: `chatroom-${m.code}`, icon: '/icon-192.png', badge: '/icon-192.png',
+        });
+        n.onclick = () => { try { window.focus(); } catch {} openChat(m.code); n.close(); };
+      } catch {}
+    };
+  });
 
   // ---------- PWA install prompt ----------
   useEffect(() => {
@@ -472,6 +520,28 @@ export default function Page() {
     setMenuOpen(false);
   }
 
+  async function toggleNotifications() {
+    setSideMenuOpen(false); setMenuOpen(false);
+    if (typeof Notification === 'undefined') return toast('Notifications are not supported here');
+    // Already on → turn off (keeps OS permission, just stops sound + alerts)
+    if (notifEnabled && Notification.permission === 'granted') {
+      setNotifEnabled(false); store.set('notifEnabled', false);
+      return toast('🔕 Notifications muted');
+    }
+    if (Notification.permission === 'denied') {
+      return toast('Notifications are blocked. Enable them in your browser settings.');
+    }
+    let perm = Notification.permission;
+    if (perm !== 'granted') { try { perm = await Notification.requestPermission(); } catch {} }
+    if (perm === 'granted') {
+      setNotifEnabled(true); store.set('notifEnabled', true);
+      playPing();
+      toast('🔔 Notifications enabled');
+    } else {
+      toast('Notifications not enabled');
+    }
+  }
+
   // ---------- derived ----------
   const sortedChats = Object.values(chats).sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
   const visibleMessages = activeChat
@@ -543,6 +613,7 @@ export default function Page() {
                 <div className="menu side" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'profile' }); }}>⚙️ Profile settings</button>
                   <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'newchat' }); }}>➕ New chat</button>
+                  <button onClick={toggleNotifications}>{notifEnabled ? '🔕 Mute notifications' : '🔔 Enable notifications'}</button>
                   <button onClick={toggleTheme}>{theme === 'dark' ? '☀️ Light mode' : '🌙 Dark mode'}</button>
                   {canInstall && <button onClick={openInstall}>📲 Install app</button>}
                 </div>
@@ -861,6 +932,27 @@ function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', t === 'light' ? '#f0f2f5' : '#111b21');
+}
+
+// Short two-tone "ding" for incoming messages — generated with WebAudio so no asset is needed.
+function playPing() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = playPing._ctx || (playPing._ctx = new Ctx());
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const t0 = ctx.currentTime;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, t0);
+    o.frequency.setValueAtTime(1170, t0 + 0.09);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.18, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
+    o.start(t0); o.stop(t0 + 0.34);
+  } catch {}
 }
 
 const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
