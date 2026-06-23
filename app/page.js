@@ -29,6 +29,11 @@ export default function Page() {
   const [reactingId, setReactingId] = useState(null); // message id whose reaction picker is open
   const [theme, setTheme] = useState('dark');
 
+  // PWA install
+  const [installEvt, setInstallEvt] = useState(null); // deferred beforeinstallprompt event (Android/desktop)
+  const [iosCapable, setIosCapable] = useState(false); // iOS Safari, not yet installed
+  const [bannerOpen, setBannerOpen] = useState(false); // install banner visibility
+
   // new-chat modal fields
   const [tab, setTab] = useState('join');
   const [joinCode, setJoinCode] = useState('');
@@ -197,6 +202,57 @@ export default function Page() {
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
   useEffect(() => { activeCodeRef.current = activeCode; }, [activeCode]);
+
+  // ---------- PWA install prompt ----------
+  useEffect(() => {
+    const standalone = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone;
+    if (standalone) return; // already installed — nothing to prompt
+
+    const dismissed = store.get('installDismissed', false);
+
+    const onBIP = (e) => {
+      e.preventDefault();
+      setInstallEvt(e);
+      if (!dismissed) setBannerOpen(true);
+    };
+    window.addEventListener('beforeinstallprompt', onBIP);
+
+    const onInstalled = () => {
+      setBannerOpen(false); setInstallEvt(null); setIosCapable(false);
+      store.set('installDismissed', true);
+      toast('ChatRoom installed 🎉');
+    };
+    window.addEventListener('appinstalled', onInstalled);
+
+    // iOS Safari never fires beforeinstallprompt — show manual instructions instead.
+    const ua = window.navigator.userAgent || '';
+    const isIOS = /iphone|ipad|ipod/i.test(ua) || (/macintosh/i.test(ua) && 'ontouchend' in document);
+    const isSafari = /safari/i.test(ua) && !/crios|fxios|edgios|android/i.test(ua);
+    if (isIOS && isSafari) { setIosCapable(true); if (!dismissed) setBannerOpen(true); }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBIP);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, [toast]);
+
+  const canInstall = !!installEvt || iosCapable;
+
+  async function doInstall() {
+    if (!installEvt) return; // iOS path shows manual instructions in the banner
+    installEvt.prompt();
+    try { await installEvt.userChoice; } catch {}
+    setInstallEvt(null); setBannerOpen(false);
+  }
+  function dismissInstall() {
+    setBannerOpen(false);
+    store.set('installDismissed', true);
+  }
+  function openInstall() {
+    setSideMenuOpen(false); setMenuOpen(false);
+    if (installEvt) doInstall();
+    else setBannerOpen(true); // iOS: reveal the "Add to Home Screen" steps
+  }
 
   const activeChat = activeCode ? chats[activeCode] : null;
   const activeMsgCount = activeChat ? activeChat.messages.length : 0;
@@ -488,6 +544,7 @@ export default function Page() {
                   <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'profile' }); }}>⚙️ Profile settings</button>
                   <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'newchat' }); }}>➕ New chat</button>
                   <button onClick={toggleTheme}>{theme === 'dark' ? '☀️ Light mode' : '🌙 Dark mode'}</button>
+                  {canInstall && <button onClick={openInstall}>📲 Install app</button>}
                 </div>
               )}
             </header>
@@ -759,6 +816,22 @@ export default function Page() {
           <button className="lightbox-close" title="Close" onClick={() => setLightbox(null)}>✕</button>
           <img src={lightbox.url} alt="" onClick={(e) => e.stopPropagation()} />
           <button className="lightbox-dl" onClick={(e) => { e.stopPropagation(); downloadMedia(lightbox.url, lightbox.name || 'image.jpg'); }}>⬇ Download</button>
+        </div>
+      )}
+
+      {bannerOpen && canInstall && (
+        <div className="install-banner">
+          <div className="install-logo">💬</div>
+          <div className="install-text">
+            <div className="strong">Install ChatRoom</div>
+            {installEvt ? (
+              <div className="muted tiny">Add it to your home screen for a full-screen, app-like experience.</div>
+            ) : (
+              <div className="muted tiny">Tap <b>Share</b> <span aria-hidden>⎙</span> then <b>“Add to Home Screen”</b>.</div>
+            )}
+          </div>
+          {installEvt && <button className="btn primary small" onClick={doInstall}>Install</button>}
+          <button className="install-x" onClick={dismissInstall} title="Dismiss">✕</button>
         </div>
       )}
 

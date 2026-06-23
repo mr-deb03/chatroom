@@ -308,6 +308,16 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .viewable { cursor: pointer; }
 .view-photo-row { display: flex; justify-content: center; margin: 0 0 8px; }
 
+/* ---------- Install banner ---------- */
+.install-banner { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); width: calc(100% - 24px); max-width: 460px; display: flex; align-items: center; gap: 12px; background: var(--panel-2); border: 1px solid #2b3a43; border-radius: 16px; padding: 12px 14px; box-shadow: var(--shadow); z-index: 95; animation: install-up .3s ease; }
+.install-logo { flex: none; width: 46px; height: 46px; border-radius: 12px; background: var(--panel-3); display: flex; align-items: center; justify-content: center; font-size: 26px; }
+.install-text { flex: 1; min-width: 0; }
+.install-text .strong { font-size: 15px; display: block; }
+.install-banner .btn.small { flex: none; }
+.install-x { flex: none; width: 32px; height: 32px; border-radius: 50%; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 16px; }
+.install-x:hover { background: rgba(255,255,255,.08); color: var(--text); }
+@keyframes install-up { from { opacity: 0; transform: translateX(-50%) translateY(20px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
 /* ---------- Toast ---------- */
 .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--panel-3); color: var(--text); padding: 11px 18px; border-radius: 24px; font-size: 14px; opacity: 0; pointer-events: none; transition: .25s; z-index: 80; box-shadow: var(--shadow); }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
