@@ -182,10 +182,10 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .chat-title-text { min-width: 0; }
 .chat-title-text .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.icon-btn { background: transparent; border: none; color: var(--text); cursor: pointer; font-size: 20px; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; }
+.icon-btn { background: transparent; border: none; color: var(--text); cursor: pointer; font-size: 24px; width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; }
 .icon-btn:hover { background: rgba(255, 255, 255, .06); }
-.icon-btn.back { font-size: 30px; }
-.icon-btn.round.send { background: var(--accent); color: #fff; font-size: 18px; }
+.icon-btn.back { font-size: 36px; }
+.icon-btn.round.send { background: var(--accent); color: #fff; font-size: 22px; }
 
 .menu { position: absolute; top: 52px; right: 10px; background: var(--panel-2); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; min-width: 240px; z-index: 20; }
 .menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); padding: 13px 16px; cursor: pointer; font-size: 14px; }
@@ -244,9 +244,9 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .reply-quote .rq-name { color: var(--accent); font-weight: 700; display: block; font-size: 12px; }
 .reply-quote .rq-body { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; max-width: 220px; }
 
-.msg-actions { position: absolute; top: 2px; right: 4px; display: none; gap: 2px; }
+.msg-actions { position: absolute; top: 2px; right: 4px; display: none; gap: 3px; }
 .bubble:hover .msg-actions { display: flex; }
-.msg-actions button { background: rgba(0, 0, 0, .45); border: none; color: var(--text); cursor: pointer; border-radius: 6px; font-size: 12px; padding: 2px 6px; }
+.msg-actions button { background: rgba(0, 0, 0, .45); border: none; color: var(--text); cursor: pointer; border-radius: 6px; font-size: 15px; padding: 3px 8px; }
 
 /* voice note */
 .voice { display: flex; align-items: center; gap: 10px; min-width: 200px; }
