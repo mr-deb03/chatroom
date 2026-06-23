@@ -96,6 +96,26 @@ export async function uploadFile(fileOrBlob, filename) {
   return res.json();
 }
 
+// Download a media file (image / voice / file) with a sensible filename.
+// Fetches as a blob so it reliably saves instead of opening in a tab.
+export async function downloadMedia(url, filename) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objUrl), 1500);
+  } catch {
+    window.open(url, '_blank'); // fallback: open in a new tab
+  }
+}
+
 // Resize/compress an image file to a data URL (used for avatars)
 export function fileToCompressedDataURL(file, max = 256) {
   return new Promise((resolve, reject) => {

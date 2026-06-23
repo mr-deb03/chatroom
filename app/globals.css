@@ -206,6 +206,8 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .voice .track { flex: 1; height: 4px; background: rgba(255, 255, 255, .2); border-radius: 4px; position: relative; cursor: pointer; }
 .voice .track .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 4px; width: 0%; }
 .voice .dur { font-size: 11px; color: var(--muted); min-width: 32px; text-align: right; }
+.voice .dl { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 2px 4px; flex: none; }
+.voice .dl:hover { color: var(--text); }
 
 .day-sep, .system-msg { align-self: center; background: rgba(32, 44, 51, .8); color: var(--muted); font-size: 12px; padding: 5px 12px; border-radius: 8px; margin: 8px 0; text-align: center; }
 
@@ -247,7 +249,9 @@ input:focus, textarea:focus { border-color: var(--accent); }
 
 /* ---------- Lightbox ---------- */
 .lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, .92); z-index: 60; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
-.lightbox img { max-width: 94vw; max-height: 94vh; border-radius: 8px; }
+.lightbox img { max-width: 94vw; max-height: 88vh; border-radius: 8px; }
+.lightbox-dl { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; border: none; border-radius: 24px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow); }
+.lightbox-dl:hover { background: var(--accent-dark); }
 
 /* ---------- Toast ---------- */
 .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--panel-3); color: var(--text); padding: 11px 18px; border-radius: 24px; font-size: 14px; opacity: 0; pointer-events: none; transition: .25s; z-index: 80; box-shadow: var(--shadow); }

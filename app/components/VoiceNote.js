@@ -1,8 +1,8 @@
 'use client';
 import { useRef, useState, useEffect } from 'react';
-import { fmtDuration } from '../lib/util';
+import { fmtDuration, downloadMedia } from '../lib/util';
 
-export default function VoiceNote({ src, duration }) {
+export default function VoiceNote({ src, duration, name }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [cur, setCur] = useState(0);
@@ -60,6 +60,7 @@ export default function VoiceNote({ src, duration }) {
         <div className="fill" style={{ width: `${pct}%` }} />
       </div>
       <span className="dur">{fmtDuration(playing || cur ? cur : total)}</span>
+      <button className="dl" title="Download voice note" onClick={() => downloadMedia(src, name || 'voice-note.webm')}>⬇</button>
       <audio ref={audioRef} src={src} preload="metadata" />
     </div>
   );

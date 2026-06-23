@@ -5,7 +5,7 @@ import Avatar from './components/Avatar';
 import VoiceNote from './components/VoiceNote';
 import {
   uid, formatTime, dayKey, dayLabel, fmtDuration, lastSeenLabel, shortStamp,
-  store, uploadFile, fileToCompressedDataURL,
+  store, uploadFile, fileToCompressedDataURL, downloadMedia,
 } from './lib/util';
 
 export default function Page() {
@@ -24,7 +24,7 @@ export default function Page() {
   const [sideMenuOpen, setSideMenuOpen] = useState(false); // sidebar overflow menu
   const [itemMenu, setItemMenu] = useState(null);      // code whose list-item menu is open
   const [modal, setModal] = useState(null);
-  const [lightbox, setLightbox] = useState('');
+  const [lightbox, setLightbox] = useState(null);
   const [toastMsg, setToastMsg] = useState('');
 
   // new-chat modal fields
@@ -536,7 +536,7 @@ export default function Page() {
                             m={m} me={profile.userId} isGroup={members.length > 2}
                             onReply={() => setReplyTo(m)}
                             onDelete={() => setModal({ type: 'deleteMsg', code: activeCode, m })}
-                            onImage={(src) => setLightbox(src)}
+                            onImage={(media) => setLightbox(media)}
                           />
                         )}
                       </Fragment>
@@ -698,7 +698,10 @@ export default function Page() {
       )}
 
       {lightbox && (
-        <div className="lightbox" onClick={() => setLightbox('')}><img src={lightbox} alt="" /></div>
+        <div className="lightbox" onClick={() => setLightbox(null)}>
+          <img src={lightbox.url} alt="" />
+          <button className="lightbox-dl" onClick={(e) => { e.stopPropagation(); downloadMedia(lightbox.url, lightbox.name || 'image.jpg'); }}>⬇ Download</button>
+        </div>
       )}
 
       <div className={`toast ${toastMsg ? 'show' : ''}`}>{toastMsg}</div>
@@ -722,6 +725,12 @@ function AvatarPicker({ avatar, onPick }) {
   );
 }
 
+function mediaFileName(m) {
+  if (m.type === 'image') return `photo-${m.id}.jpg`;
+  if (m.type === 'voice') return `voice-${m.id}.webm`;
+  return `file-${m.id}`;
+}
+
 function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
   const out = m.userId === me;
   return (
@@ -730,6 +739,9 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
         {!out && isGroup && !m.deleted && <div className="sender">{m.name}</div>}
         {!m.deleted && (
           <div className="msg-actions">
+            {m.media && (
+              <button title="Download" onClick={() => downloadMedia(m.media.url, m.media.name || mediaFileName(m))}>⬇</button>
+            )}
             <button title="Reply" onClick={onReply}>↩</button>
             <button title="Delete" onClick={onDelete}>🗑</button>
           </div>
@@ -744,8 +756,8 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
                 <span className="rq-body">{m.replyTo.preview}</span>
               </div>
             )}
-            {m.type === 'image' && m.media && <img className="photo" src={m.media.url} alt="" onClick={() => onImage(m.media.url)} />}
-            {m.type === 'voice' && m.media && <VoiceNote src={m.media.url} duration={m.media.duration} />}
+            {m.type === 'image' && m.media && <img className="photo" src={m.media.url} alt="" onClick={() => onImage(m.media)} />}
+            {m.type === 'voice' && m.media && <VoiceNote src={m.media.url} duration={m.media.duration} name={m.media.name} />}
             {m.type === 'file' && m.media && <a className="file-link" href={m.media.url} download={m.media.name} target="_blank" rel="noreferrer">📄 {m.media.name}</a>}
             {m.text && <div className={`text ${m.type === 'image' ? 'caption' : ''}`}>{m.text}</div>}
           </>

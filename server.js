@@ -21,6 +21,25 @@ const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT || '3000', 10);
 const ROOT = __dirname;
 const DATA_FILE = path.join(ROOT, 'data.json');
+const UPLOAD_DIR = path.join(ROOT, 'public', 'uploads');
+const UPLOAD_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.webm': 'audio/webm', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+};
+
+// Serve locally-stored uploads ourselves — Next does not serve files written to
+// public/ after the build, so /uploads/* 404s otherwise (file-fallback mode only).
+function serveUpload(pathname, res) {
+  const name = path.basename(decodeURIComponent(pathname)); // strip any path traversal
+  const file = path.join(UPLOAD_DIR, name);
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) { res.statusCode = 404; res.end('Not found'); return; }
+    res.setHeader('Content-Type', UPLOAD_MIME[path.extname(name).toLowerCase()] || 'application/octet-stream');
+    res.setHeader('Content-Length', st.size);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    fs.createReadStream(file).pipe(res);
+  });
+}
 
 const MONGO_URI = process.env.MONGODB_URI || '';
 const MONGO_DB = process.env.MONGODB_DB || 'chatroom';
@@ -116,7 +135,11 @@ const handle = app.getRequestHandler();
   await loadDb();
   await app.prepare();
 
-  const server = createServer((req, res) => handle(req, res, parse(req.url, true)));
+  const server = createServer((req, res) => {
+    const parsed = parse(req.url, true);
+    if (parsed.pathname && parsed.pathname.startsWith('/uploads/')) return serveUpload(parsed.pathname, res);
+    handle(req, res, parsed);
+  });
   const io = new Server(server, { maxHttpBufferSize: 1e8, cors: { origin: '*' } });
 
   const online = new Map(); // socket.id -> { userId, name, codes: Set<string> }
