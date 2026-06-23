@@ -3,6 +3,13 @@ import './globals.css';
 export const metadata = {
   title: 'ChatRoom',
   description: 'Real-time chat rooms with invite codes, images and voice notes',
+  manifest: '/manifest.json',
+  applicationName: 'ChatRoom',
+  appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'ChatRoom' },
+  icons: {
+    icon: [{ url: '/icon-192.png', sizes: '192x192', type: 'image/png' }, { url: '/icon-512.png', sizes: '512x512', type: 'image/png' }],
+    apple: '/apple-touch-icon.png',
+  },
 };
 
 export const viewport = {
@@ -14,9 +21,14 @@ export const viewport = {
 };
 
 export default function RootLayout({ children }) {
+  // Set the saved theme before paint to avoid a flash of the wrong theme.
+  const themeScript = `(function(){try{var t=localStorage.getItem('theme');t=t?JSON.parse(t):'dark';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        {children}
+      </body>
     </html>
   );
 }

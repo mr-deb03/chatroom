@@ -263,6 +263,21 @@ const handle = app.getRequestHandler();
       io.to(code).emit('messageDeleted', { code, id });
     });
 
+    // Toggle an emoji reaction on a message (one reaction per user)
+    socket.on('react', ({ code, id, emoji }) => {
+      const sess = online.get(socket.id);
+      if (!sess || !sess.codes.has(code)) return;
+      const room = getRoom(code);
+      if (!room) return;
+      const m = room.messages.find((x) => x.id === id);
+      if (!m || m.deleted) return;
+      if (!m.reactions) m.reactions = {};
+      if (m.reactions[sess.userId] === emoji) delete m.reactions[sess.userId];
+      else m.reactions[sess.userId] = emoji;
+      markDirty(code);
+      io.to(code).emit('reaction', { code, id, reactions: m.reactions });
+    });
+
     socket.on('clearChat', ({ code }, ack) => {
       const sess = online.get(socket.id);
       if (!sess || !sess.codes.has(code)) return;

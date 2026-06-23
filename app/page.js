@@ -26,6 +26,8 @@ export default function Page() {
   const [modal, setModal] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [toastMsg, setToastMsg] = useState('');
+  const [reactingId, setReactingId] = useState(null); // message id whose reaction picker is open
+  const [theme, setTheme] = useState('dark');
 
   // new-chat modal fields
   const [tab, setTab] = useState('join');
@@ -90,6 +92,15 @@ export default function Page() {
     profileRef.current = p;
     if (p.name) setScreen('home');
 
+    const savedTheme = store.get('theme', 'dark');
+    setTheme(savedTheme);
+    applyTheme(savedTheme);
+
+    // Register the service worker so the app is installable on mobile
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
     const params = new URLSearchParams(window.location.search);
     const deepRoom = (params.get('room') || '').toUpperCase();
 
@@ -119,6 +130,13 @@ export default function Page() {
       });
       socket.on('chatCleared', ({ code }) => {
         setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], messages: [] } } : prev));
+      });
+      socket.on('reaction', ({ code, id, reactions }) => {
+        setChats((prev) => {
+          const c = prev[code];
+          if (!c) return prev;
+          return { ...prev, [code]: { ...c, messages: c.messages.map((m) => m.id === id ? { ...m, reactions } : m) } };
+        });
       });
       socket.on('presence', ({ code, members }) => {
         setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], members } } : prev));
@@ -184,11 +202,11 @@ export default function Page() {
   }, [activeCode, activeMsgCount, typingByRoom]);
 
   useEffect(() => {
-    if (!menuOpen && !sideMenuOpen && itemMenu === null) return;
-    const h = () => { setMenuOpen(false); setSideMenuOpen(false); setItemMenu(null); };
+    if (!menuOpen && !sideMenuOpen && itemMenu === null && reactingId === null) return;
+    const h = () => { setMenuOpen(false); setSideMenuOpen(false); setItemMenu(null); setReactingId(null); };
     document.addEventListener('click', h);
     return () => document.removeEventListener('click', h);
-  }, [menuOpen, sideMenuOpen, itemMenu]);
+  }, [menuOpen, sideMenuOpen, itemMenu, reactingId]);
 
   useEffect(() => {
     if (!recording) return;
@@ -367,6 +385,20 @@ export default function Page() {
     navigator.clipboard?.writeText(textToCopy).then(() => toast(label || 'Copied'), () => toast('Copy failed'));
   }
 
+  function emitReact(code, id, emoji) {
+    socketRef.current?.emit('react', { code, id, emoji });
+    setReactingId(null);
+  }
+
+  function toggleTheme() {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    store.set('theme', next);
+    applyTheme(next);
+    setSideMenuOpen(false);
+    setMenuOpen(false);
+  }
+
   // ---------- derived ----------
   const sortedChats = Object.values(chats).sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
   const visibleMessages = activeChat
@@ -435,6 +467,7 @@ export default function Page() {
                 <div className="menu side" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'profile' }); }}>⚙️ Profile settings</button>
                   <button onClick={() => { setSideMenuOpen(false); setModal({ type: 'newchat' }); }}>➕ New chat</button>
+                  <button onClick={toggleTheme}>{theme === 'dark' ? '☀️ Light mode' : '🌙 Dark mode'}</button>
                 </div>
               )}
             </header>
@@ -537,6 +570,9 @@ export default function Page() {
                             onReply={() => setReplyTo(m)}
                             onDelete={() => setModal({ type: 'deleteMsg', code: activeCode, m })}
                             onImage={(media) => setLightbox(media)}
+                            reacting={reactingId === m.id}
+                            onOpenReact={() => setReactingId(reactingId === m.id ? null : m.id)}
+                            onPickReact={(emoji) => emitReact(activeCode, m.id, emoji)}
                           />
                         )}
                       </Fragment>
@@ -725,27 +761,70 @@ function AvatarPicker({ avatar, onPick }) {
   );
 }
 
+function applyTheme(t) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.setAttribute('data-theme', t);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', t === 'light' ? '#f0f2f5' : '#111b21');
+}
+
+const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
 function mediaFileName(m) {
   if (m.type === 'image') return `photo-${m.id}.jpg`;
   if (m.type === 'voice') return `voice-${m.id}.webm`;
   return `file-${m.id}`;
 }
 
-function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
+function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage, reacting, onOpenReact, onPickReact }) {
   const out = m.userId === me;
-  // For a captionless photo, overlay the time on the image instead of a bottom strip
   const overlayMeta = !m.deleted && m.type === 'image' && m.media && !m.text;
+  const [dx, setDx] = useState(0);
+  const touch = useRef({ x: 0, y: 0, swiping: false, lpTimer: null });
+
+  const myReaction = m.reactions ? m.reactions[me] : null;
+  const reactionCounts = {};
+  if (m.reactions) for (const e of Object.values(m.reactions)) reactionCounts[e] = (reactionCounts[e] || 0) + 1;
+
+  function onTouchStart(e) {
+    if (m.deleted) return;
+    const t = e.touches[0];
+    touch.current.x = t.clientX; touch.current.y = t.clientY; touch.current.swiping = false;
+    clearTimeout(touch.current.lpTimer);
+    touch.current.lpTimer = setTimeout(() => { if (!touch.current.swiping) onOpenReact(); }, 500);
+  }
+  function onTouchMove(e) {
+    const t = e.touches[0];
+    const ddx = t.clientX - touch.current.x, ddy = t.clientY - touch.current.y;
+    if (Math.abs(ddx) > 8 || Math.abs(ddy) > 8) clearTimeout(touch.current.lpTimer);
+    if (Math.abs(ddx) > Math.abs(ddy) && ddx > 6) { touch.current.swiping = true; setDx(Math.min(ddx, 80)); }
+  }
+  function onTouchEnd() {
+    clearTimeout(touch.current.lpTimer);
+    if (dx > 55) onReply();
+    setDx(0); touch.current.swiping = false;
+  }
+
   return (
-    <div className={`msg-row ${out ? 'out' : 'in'}`}>
+    <div className={`msg-row ${out ? 'out' : 'in'}`}
+      onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+      style={dx ? { transform: `translateX(${dx}px)` } : undefined}>
+      {dx > 10 && <span className="swipe-reply">↩</span>}
       <div className={`bubble ${m.deleted ? 'deleted' : ''} ${m.type === 'image' && m.media && !m.deleted ? 'image' : ''}`}>
         {!out && isGroup && !m.deleted && <div className="sender">{m.name}</div>}
         {!m.deleted && (
           <div className="msg-actions">
-            {m.media && (
-              <button title="Download" onClick={() => downloadMedia(m.media.url, m.media.name || mediaFileName(m))}>⬇</button>
-            )}
+            <button title="React" onClick={(e) => { e.stopPropagation(); onOpenReact(); }}>😀</button>
+            {m.media && <button title="Download" onClick={() => downloadMedia(m.media.url, m.media.name || mediaFileName(m))}>⬇</button>}
             <button title="Reply" onClick={onReply}>↩</button>
             <button title="Delete" onClick={onDelete}>🗑</button>
+          </div>
+        )}
+        {reacting && (
+          <div className="react-picker" onClick={(e) => e.stopPropagation()}>
+            {REACTIONS.map((emo) => (
+              <button key={emo} className={myReaction === emo ? 'on' : ''} onClick={() => onPickReact(emo)}>{emo}</button>
+            ))}
           </div>
         )}
         {m.deleted ? (
@@ -770,6 +849,13 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
           </>
         )}
         {!overlayMeta && <span className="meta">{formatTime(m.ts)}</span>}
+        {Object.keys(reactionCounts).length > 0 && (
+          <div className="reactions" onClick={(e) => { e.stopPropagation(); onOpenReact(); }}>
+            {Object.entries(reactionCounts).map(([emo, n]) => (
+              <span key={emo} className={`react-pill ${myReaction === emo ? 'mine' : ''}`}>{emo}{n > 1 ? ` ${n}` : ''}</span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
