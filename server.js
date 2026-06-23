@@ -118,6 +118,8 @@ function ensureRoom(code, name, ownerId) {
       code,
       name: name || 'New Room',
       ownerId: ownerId || null,
+      image: '',
+      description: '',
       createdAt: Date.now(),
       messages: [],
       members: {}, // userId -> { name, avatar, lastSeen }
@@ -207,7 +209,7 @@ const handle = app.getRequestHandler();
 
       ack && ack({
         ok: true,
-        room: { code: room.code, name: room.name, ownerId: room.ownerId },
+        room: { code: room.code, name: room.name, ownerId: room.ownerId, image: room.image || '', description: room.description || '' },
         messages: room.messages,
         members: presenceList(code),
       });
@@ -290,6 +292,27 @@ const handle = app.getRequestHandler();
       room.messages = [];
       markDirty(code);
       io.to(code).emit('chatCleared', { code });
+      ack && ack({ ok: true });
+    });
+
+    // Update room image / name / description (room creator only)
+    socket.on('updateRoom', ({ code, name, image, description }, ack) => {
+      const sess = online.get(socket.id);
+      if (!sess || !sess.codes.has(code)) return;
+      const room = getRoom(code);
+      if (!room) return;
+      if (room.ownerId && room.ownerId !== sess.userId) {
+        ack && ack({ ok: false, error: 'Only the room creator can edit room info.' });
+        return;
+      }
+      if (typeof name === 'string' && name.trim()) room.name = name.trim().slice(0, 60);
+      if (typeof image === 'string') room.image = image.slice(0, 400000); // ~256px data URL
+      if (typeof description === 'string') room.description = description.slice(0, 500);
+      markDirty(code);
+      io.to(code).emit('roomUpdated', {
+        code,
+        room: { code: room.code, name: room.name, ownerId: room.ownerId, image: room.image || '', description: room.description || '' },
+      });
       ack && ack({ ok: true });
     });
 

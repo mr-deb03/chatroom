@@ -141,6 +141,9 @@ export default function Page() {
       socket.on('presence', ({ code, members }) => {
         setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], members } } : prev));
       });
+      socket.on('roomUpdated', ({ code, room }) => {
+        setChats((prev) => (prev[code] ? { ...prev, [code]: { ...prev[code], info: room } } : prev));
+      });
       socket.on('typing', ({ code, userId, name, isTyping }) => {
         setTypingByRoom((prev) => {
           const room = { ...(prev[code] || {}) };
@@ -390,6 +393,14 @@ export default function Page() {
     setReactingId(null);
   }
 
+  function saveRoom(code, fields) {
+    socketRef.current?.emit('updateRoom', { code, ...fields }, (res) => {
+      if (!res?.ok) return toast(res?.error || 'Could not update room');
+      toast('Room updated');
+    });
+    setModal(null);
+  }
+
   function toggleTheme() {
     const next = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
@@ -485,7 +496,9 @@ export default function Page() {
                 const typing = typingByRoom[code] && Object.keys(typingByRoom[code]).some((id) => id !== profile.userId);
                 return (
                   <div key={code} className={`chat-item ${activeCode === code ? 'active' : ''}`} onClick={() => openChat(code)}>
-                    <div className="chat-item-avatar">{(chat.info.name || '#')[0].toUpperCase()}</div>
+                    <div className="chat-item-avatar">
+                      {chat.info.image ? <img src={chat.info.image} alt="" /> : (chat.info.name || '#')[0].toUpperCase()}
+                    </div>
                     <div className="chat-item-body">
                       <div className="chat-item-top">
                         <span className="nm strong">{chat.info.name}</span>
@@ -530,8 +543,10 @@ export default function Page() {
               <>
                 <header className="chat-header">
                   <button className="icon-btn back conv-back" onClick={() => { setActiveCode(null); activeCodeRef.current = null; }} title="Back">‹</button>
-                  <div className="chat-title" onClick={() => setModal({ type: 'members', code: activeCode })}>
-                    <div className="chat-room-avatar">{(activeChat.info.name || '#')[0].toUpperCase()}</div>
+                  <div className="chat-title" onClick={() => setModal({ type: 'roomInfo', code: activeCode })}>
+                    <div className="chat-room-avatar">
+                      {activeChat.info.image ? <img src={activeChat.info.image} alt="" /> : (activeChat.info.name || '#')[0].toUpperCase()}
+                    </div>
                     <div className="chat-title-text">
                       <div className="nm strong">{activeChat.info.name}</div>
                       <div className="muted tiny">
@@ -544,7 +559,7 @@ export default function Page() {
                   <button className="icon-btn" title="Menu" onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}>⋮</button>
                   {menuOpen && (
                     <div className="menu" onClick={(e) => e.stopPropagation()}>
-                      <button onClick={() => { setMenuOpen(false); setModal({ type: 'members', code: activeCode }); }}>👥 Members</button>
+                      <button onClick={() => { setMenuOpen(false); setModal({ type: 'roomInfo', code: activeCode }); }}>ℹ️ Room info</button>
                       <button onClick={() => { setMenuOpen(false); setModal({ type: 'invite', code: activeCode }); }}>🔗 Share invite code</button>
                       <button onClick={() => clearChatLocal(activeCode)}>🧹 Clear chat (only me)</button>
                       <button className="danger" onClick={() => { setMenuOpen(false); setModal({ type: 'confirmClearAll', code: activeCode }); }}>🗑️ Delete chat for everyone</button>
@@ -673,22 +688,15 @@ export default function Page() {
             </div>
           )}
 
-          {modal.type === 'members' && chats[modal.code] && (
-            <div>
-              <h3>Members ({chats[modal.code].members.length})</h3>
-              <div>
-                {chats[modal.code].members.map((m) => (
-                  <div className="member-row" key={m.userId}>
-                    <Avatar src={m.avatar} name={m.name} size={42} />
-                    <div className="who">
-                      <div className="nm strong">{m.name}{m.userId === profile.userId ? ' (you)' : ''}{chats[modal.code].info.ownerId === m.userId ? ' • admin' : ''}</div>
-                      <div className="muted tiny">{m.online ? 'online' : lastSeenLabel(m.lastSeen)}</div>
-                    </div>
-                    <div className={`dot ${m.online ? 'on' : 'off'}`} />
-                  </div>
-                ))}
-              </div>
-            </div>
+          {modal.type === 'roomInfo' && chats[modal.code] && (
+            <RoomInfo
+              chat={chats[modal.code]}
+              isOwner={chats[modal.code].info.ownerId === profile.userId}
+              meId={profile.userId}
+              onPickFail={() => toast('Could not load that image')}
+              onSave={(fields) => saveRoom(modal.code, fields)}
+              onClose={() => setModal(null)}
+            />
           )}
 
           {modal.type === 'profile' && (
@@ -875,6 +883,58 @@ function ProfileSettings({ profile, onPick, onSave, onClose }) {
       <div className="modal-actions">
         <button className="btn ghost" onClick={onClose}>Cancel</button>
         <button className="btn primary" onClick={() => onSave({ name, about, avatar: profile.avatar })}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+function RoomInfo({ chat, isOwner, meId, onPickFail, onSave, onClose }) {
+  const [name, setName] = useState(chat.info.name);
+  const [description, setDescription] = useState(chat.info.description || '');
+  const [image, setImage] = useState(chat.info.image || '');
+  async function pick(file) {
+    if (!file) return;
+    try { setImage(await fileToCompressedDataURL(file, 256)); } catch { onPickFail(); }
+  }
+  return (
+    <div>
+      <h3>Room info</h3>
+      {isOwner
+        ? <AvatarPicker avatar={image} name={name} onPick={pick} />
+        : <div className="avatar-picker"><Avatar src={image} name={name} size={110} /></div>}
+      {isOwner ? (
+        <>
+          <label className="field"><span>Room name</span>
+            <input value={name} maxLength={60} onChange={(e) => setName(e.target.value)} /></label>
+          <label className="field"><span>Description</span>
+            <textarea value={description} maxLength={500} rows={3} placeholder="Add a room description" onChange={(e) => setDescription(e.target.value)} /></label>
+        </>
+      ) : (
+        <>
+          <h3 style={{ textAlign: 'center', marginTop: 8 }}>{name}</h3>
+          <p className="muted" style={{ textAlign: 'center', whiteSpace: 'pre-wrap' }}>{description || 'No description'}</p>
+        </>
+      )}
+      <div className="invite-code-box">
+        <div className="muted tiny">Invite code</div>
+        <div className="code">{chat.info.code}</div>
+      </div>
+      <h4 className="muted" style={{ margin: '12px 0 6px' }}>Members ({chat.members.length})</h4>
+      <div>
+        {chat.members.map((m) => (
+          <div className="member-row" key={m.userId}>
+            <Avatar src={m.avatar} name={m.name} size={42} />
+            <div className="who">
+              <div className="nm strong">{m.name}{m.userId === meId ? ' (you)' : ''}{chat.info.ownerId === m.userId ? ' • admin' : ''}</div>
+              <div className="muted tiny">{m.online ? 'online' : lastSeenLabel(m.lastSeen)}</div>
+            </div>
+            <div className={`dot ${m.online ? 'on' : 'off'}`} />
+          </div>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button className="btn ghost" onClick={onClose}>Close</button>
+        {isOwner && <button className="btn primary" onClick={() => onSave({ name: name.trim() || chat.info.name, description, image })}>Save</button>}
       </div>
     </div>
   );

@@ -176,7 +176,9 @@ input:focus, textarea:focus { border-color: var(--accent); }
 /* ---------- Chat ---------- */
 .chat-header { display: flex; align-items: center; gap: 6px; background: var(--header); padding: 8px; position: relative; z-index: 5; }
 .chat-title { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
-.chat-room-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--accent-dark); display: flex; align-items: center; justify-content: center; font-weight: 700; flex: none; }
+.chat-room-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--accent-dark); display: flex; align-items: center; justify-content: center; font-weight: 700; flex: none; overflow: hidden; }
+.chat-item-avatar, .chat-room-avatar { overflow: hidden; }
+.chat-item-avatar img, .chat-room-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .chat-title-text { min-width: 0; }
 .chat-title-text .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
