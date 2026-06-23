@@ -875,7 +875,7 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage, reacting, o
   const out = m.userId === me;
   const overlayMeta = !m.deleted && m.type === 'image' && m.media && !m.text;
   const [dx, setDx] = useState(0);
-  const touch = useRef({ x: 0, y: 0, swiping: false, lpTimer: null });
+  const touch = useRef({ x: 0, y: 0, swiping: false, lpTimer: null, suppressClick: false });
 
   const myReaction = m.reactions ? m.reactions[me] : null;
   const reactionCounts = {};
@@ -884,15 +884,18 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage, reacting, o
   function onTouchStart(e) {
     if (m.deleted) return;
     const t = e.touches[0];
-    touch.current.x = t.clientX; touch.current.y = t.clientY; touch.current.swiping = false;
+    touch.current.x = t.clientX; touch.current.y = t.clientY;
+    touch.current.swiping = false; touch.current.suppressClick = false;
     clearTimeout(touch.current.lpTimer);
-    touch.current.lpTimer = setTimeout(() => { if (!touch.current.swiping) onOpenReact(); }, 500);
+    touch.current.lpTimer = setTimeout(() => {
+      if (!touch.current.swiping) { touch.current.suppressClick = true; onOpenReact(); }
+    }, 500);
   }
   function onTouchMove(e) {
     const t = e.touches[0];
     const ddx = t.clientX - touch.current.x, ddy = t.clientY - touch.current.y;
     if (Math.abs(ddx) > 8 || Math.abs(ddy) > 8) clearTimeout(touch.current.lpTimer);
-    if (Math.abs(ddx) > Math.abs(ddy) && ddx > 6) { touch.current.swiping = true; setDx(Math.min(ddx, 80)); }
+    if (Math.abs(ddx) > Math.abs(ddy) && ddx > 6) { touch.current.swiping = true; touch.current.suppressClick = true; setDx(Math.min(ddx, 80)); }
   }
   function onTouchEnd() {
     clearTimeout(touch.current.lpTimer);
@@ -905,7 +908,7 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage, reacting, o
       onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
       style={dx ? { transform: `translateX(${dx}px)` } : undefined}>
       {dx > 10 && <span className="swipe-reply">↩</span>}
-      <div className={`bubble ${m.deleted ? 'deleted' : ''} ${m.type === 'image' && m.media && !m.deleted ? 'image' : ''}`}>
+      <div className={`bubble ${m.deleted ? 'deleted' : ''} ${reacting ? 'acting' : ''} ${m.type === 'image' && m.media && !m.deleted ? 'image' : ''}`}>
         {!out && isGroup && !m.deleted && <div className="sender">{m.name}</div>}
         {!m.deleted && (
           <div className="msg-actions">
@@ -934,7 +937,9 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage, reacting, o
             )}
             {m.type === 'image' && m.media && (
               <div className="photo-wrap">
-                <img className="photo" src={m.media.url} alt="" onClick={() => onImage(m.media)} />
+                <img className="photo" src={m.media.url} alt="" draggable={false}
+                  onClick={() => { if (touch.current.suppressClick) { touch.current.suppressClick = false; return; } onImage(m.media); }}
+                  onContextMenu={(e) => e.preventDefault()} />
                 {overlayMeta && <div className="photo-overlay"><span>{formatTime(m.ts)}</span></div>}
               </div>
             )}
