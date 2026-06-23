@@ -50,4 +50,12 @@ npm start        # NODE_ENV=production on port 3000 (set PORT to change)
 | `app/page.js` | The whole client app (profile, lobby, chat) |
 | `app/components/` | `Avatar`, `VoiceNote` (player) |
 | `app/lib/util.js` | Helpers (time formatting, uploads, image compression) |
-| `data.json` | Persisted rooms & messages (auto-created) |
+| `app/media/[id]/route.js` | Serves images / voice notes back from MongoDB GridFS |
+| `data.json` | Local fallback store for rooms & messages (auto-created) |
+
+## Storage
+
+By default chats are saved to `data.json` and media to `public/uploads/` — fine for
+local use. For durable, hosted storage set **`MONGODB_URI`** (e.g. MongoDB Atlas) and
+the app stores rooms/messages in a `rooms` collection and media in **GridFS** instead —
+everything then survives restarts. See [DEPLOY.md](DEPLOY.md) for the 2-minute setup.

@@ -13,3 +13,7 @@ services:
         value: production
       - key: NODE_VERSION
         value: "20.18.0"
+      # Paste your MongoDB Atlas connection string in the Render dashboard.
+      # Without it the app stores chats in a local file that resets on restart.
+      - key: MONGODB_URI
+        sync: false

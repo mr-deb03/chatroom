@@ -147,7 +147,20 @@ export default function Page() {
       // initial empty profile by the [profile] effect before this async callback runs.
       const rec = store.get('recentRooms', []);
       rec.forEach((r) => socket.emit('join', { code: r.code, profile: p }, (res) => {
-        if (res?.ok) upsertChat(res); else forgetRoom(r.code);
+        if (res?.ok) { upsertChat(res); return; }
+        // Server couldn't return the room (offline / restarted). Keep it in the list
+        // as a placeholder rather than silently deleting it — chats stay until the
+        // user explicitly removes them. It refills automatically once the server has it.
+        setChats((prev) => prev[r.code] ? prev : {
+          ...prev,
+          [r.code]: {
+            info: { code: r.code, name: r.name || r.code, ownerId: null },
+            messages: [], members: [], unread: 0,
+            clearedAt: store.get(`cleared:${r.code}`, 0),
+            hidden: new Set(store.get(`hidden:${r.code}`, [])),
+            lastTs: r.ts || 0, unavailable: true,
+          },
+        });
       }));
 
       if (deepRoom) {

@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
+import { GridFSBucket } from 'mongodb';
+import { mongoEnabled, getMongoDb } from '../../lib/mongo';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,20 +33,29 @@ export async function POST(req) {
       return NextResponse.json({ error: 'File too large (max 25MB)' }, { status: 413 });
     }
 
-    const dir = path.join(process.cwd(), 'public', 'uploads');
-    await mkdir(dir, { recursive: true });
-
     let ext = path.extname(file.name || '').toLowerCase();
     if (!ext) ext = EXT_BY_MIME[file.type] || '';
     const filename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`;
-    await writeFile(path.join(dir, filename), bytes);
+    const mime = file.type || 'application/octet-stream';
 
-    return NextResponse.json({
-      url: `/uploads/${filename}`,
-      mime: file.type || 'application/octet-stream',
-      name: file.name || filename,
-      size: bytes.length,
-    });
+    // Durable path: store in MongoDB GridFS so media survives server restarts.
+    if (mongoEnabled()) {
+      const db = await getMongoDb();
+      const bucket = new GridFSBucket(db, { bucketName: 'media' });
+      const id = await new Promise((resolve, reject) => {
+        const up = bucket.openUploadStream(filename, { contentType: mime, metadata: { name: file.name || filename } });
+        up.on('error', reject);
+        up.on('finish', () => resolve(up.id.toString()));
+        up.end(bytes);
+      });
+      return NextResponse.json({ url: `/media/${id}`, mime, name: file.name || filename, size: bytes.length });
+    }
+
+    // Local fallback: write to public/uploads (ephemeral on hosts without a disk).
+    const dir = path.join(process.cwd(), 'public', 'uploads');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, filename), bytes);
+    return NextResponse.json({ url: `/uploads/${filename}`, mime, name: file.name || filename, size: bytes.length });
   } catch (e) {
     console.error('[upload] error:', e);
     return NextResponse.json({ error: e.message || 'Upload failed' }, { status: 500 });
