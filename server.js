@@ -24,7 +24,7 @@ const DATA_FILE = path.join(ROOT, 'data.json');
 
 const MONGO_URI = process.env.MONGODB_URI || '';
 const MONGO_DB = process.env.MONGODB_DB || 'chatroom';
-const useMongo = !!MONGO_URI;
+let useMongo = !!MONGO_URI;
 
 const makeCode = customAlphabet('ABCDEFGHJKMNPQRSTUVWXYZ23456789', 6); // no ambiguous chars
 const makeId = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 16);
@@ -35,24 +35,33 @@ let roomsCol = null;
 
 async function loadDb() {
   if (useMongo) {
-    const client = new MongoClient(MONGO_URI);
-    await client.connect();
-    roomsCol = client.db(MONGO_DB).collection('rooms');
-    const docs = await roomsCol.find({}).toArray();
-    db.rooms = {};
-    for (const d of docs) {
-      const { _id, ...rest } = d;
-      db.rooms[_id] = { code: _id, ...rest };
-    }
-    console.log(`  Storage: MongoDB (${docs.length} rooms loaded)`);
-  } else {
     try {
-      if (fs.existsSync(DATA_FILE)) db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      const client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 10000 });
+      await client.connect();
+      await client.db(MONGO_DB).command({ ping: 1 }); // verify the connection really works
+      roomsCol = client.db(MONGO_DB).collection('rooms');
+      const docs = await roomsCol.find({}).toArray();
+      db.rooms = {};
+      for (const d of docs) {
+        const { _id, ...rest } = d;
+        db.rooms[_id] = { code: _id, ...rest };
+      }
+      console.log(`  Storage: MongoDB (${docs.length} rooms loaded)`);
+      return;
     } catch (e) {
-      console.error('Could not read data.json, starting fresh:', e.message);
+      console.error('  ✖ MongoDB connection FAILED:', e.message);
+      console.error('    → Check MONGODB_URI, and that Atlas Network Access allows 0.0.0.0/0.');
+      console.error('    → Continuing with local file storage (NOT durable across restarts).');
+      useMongo = false;
+      roomsCol = null;
     }
-    console.log('  Storage: local data.json (set MONGODB_URI for durable storage)');
   }
+  try {
+    if (fs.existsSync(DATA_FILE)) db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  } catch (e) {
+    console.error('Could not read data.json, starting fresh:', e.message);
+  }
+  console.log('  Storage: local data.json (set MONGODB_URI for durable storage)');
 }
 
 // Debounced, per-room persistence. We always know which room changed.
