@@ -40,15 +40,20 @@ export async function POST(req) {
 
     // Durable path: store in MongoDB GridFS so media survives server restarts.
     if (mongoEnabled()) {
-      const db = await getMongoDb();
-      const bucket = new GridFSBucket(db, { bucketName: 'media' });
-      const id = await new Promise((resolve, reject) => {
-        const up = bucket.openUploadStream(filename, { contentType: mime, metadata: { name: file.name || filename } });
-        up.on('error', reject);
-        up.on('finish', () => resolve(up.id.toString()));
-        up.end(bytes);
-      });
-      return NextResponse.json({ url: `/media/${id}`, mime, name: file.name || filename, size: bytes.length });
+      try {
+        const db = await getMongoDb();
+        const bucket = new GridFSBucket(db, { bucketName: 'media' });
+        const id = await new Promise((resolve, reject) => {
+          const up = bucket.openUploadStream(filename, { contentType: mime, metadata: { name: file.name || filename } });
+          up.on('error', reject);
+          up.on('finish', () => resolve(up.id.toString()));
+          up.end(bytes);
+        });
+        return NextResponse.json({ url: `/media/${id}`, mime, name: file.name || filename, size: bytes.length });
+      } catch (e) {
+        // DB unreachable / auth failed — don't break sending; fall back to local file.
+        console.error('[upload] GridFS failed, using local file instead:', e.message);
+      }
     }
 
     // Local fallback: write to public/uploads (ephemeral on hosts without a disk).
