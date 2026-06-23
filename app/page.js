@@ -733,6 +733,8 @@ function mediaFileName(m) {
 
 function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
   const out = m.userId === me;
+  // For a captionless photo, overlay the time on the image instead of a bottom strip
+  const overlayMeta = !m.deleted && m.type === 'image' && m.media && !m.text;
   return (
     <div className={`msg-row ${out ? 'out' : 'in'}`}>
       <div className={`bubble ${m.deleted ? 'deleted' : ''} ${m.type === 'image' && m.media && !m.deleted ? 'image' : ''}`}>
@@ -756,13 +758,18 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage }) {
                 <span className="rq-body">{m.replyTo.preview}</span>
               </div>
             )}
-            {m.type === 'image' && m.media && <img className="photo" src={m.media.url} alt="" onClick={() => onImage(m.media)} />}
+            {m.type === 'image' && m.media && (
+              <div className="photo-wrap">
+                <img className="photo" src={m.media.url} alt="" onClick={() => onImage(m.media)} />
+                {overlayMeta && <div className="photo-overlay"><span>{formatTime(m.ts)}</span></div>}
+              </div>
+            )}
             {m.type === 'voice' && m.media && <VoiceNote src={m.media.url} duration={m.media.duration} name={m.media.name} />}
             {m.type === 'file' && m.media && <a className="file-link" href={m.media.url} download={m.media.name} target="_blank" rel="noreferrer">📄 {m.media.name}</a>}
             {m.text && <div className={`text ${m.type === 'image' ? 'caption' : ''}`}>{m.text}</div>}
           </>
         )}
-        <span className="meta">{formatTime(m.ts)}</span>
+        {!overlayMeta && <span className="meta">{formatTime(m.ts)}</span>}
       </div>
     </div>
   );
