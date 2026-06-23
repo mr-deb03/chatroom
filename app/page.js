@@ -388,6 +388,12 @@ export default function Page() {
     navigator.clipboard?.writeText(textToCopy).then(() => toast(label || 'Copied'), () => toast('Copy failed'));
   }
 
+  // Open the full-screen viewer for any display picture (room DP, profile DP, member DP).
+  function viewImage(url, title, name) {
+    if (!url) return;
+    setLightbox({ url, title: title || '', name: name || 'photo.jpg' });
+  }
+
   function emitReact(code, id, emoji) {
     socketRef.current?.emit('react', { code, id, emoji });
     setReactingId(null);
@@ -469,7 +475,10 @@ export default function Page() {
           <aside className="sidebar">
             <header className="sidebar-header">
               <div className="me" onClick={() => setModal({ type: 'profile' })} title="Profile settings">
-                <Avatar src={profile.avatar} name={profile.name} size={40} />
+                <span className={profile.avatar ? 'viewable' : undefined}
+                  onClick={(e) => { if (profile.avatar) { e.stopPropagation(); viewImage(profile.avatar, profile.name, 'my-photo.jpg'); } }}>
+                  <Avatar src={profile.avatar} name={profile.name} size={40} />
+                </span>
                 <span className="strong">{profile.name}</span>
               </div>
               <button className="icon-btn" title="New chat" onClick={() => { setJoinError(''); setModal({ type: 'newchat' }); }}>✏️</button>
@@ -496,7 +505,8 @@ export default function Page() {
                 const typing = typingByRoom[code] && Object.keys(typingByRoom[code]).some((id) => id !== profile.userId);
                 return (
                   <div key={code} className={`chat-item ${activeCode === code ? 'active' : ''}`} onClick={() => openChat(code)}>
-                    <div className="chat-item-avatar">
+                    <div className={`chat-item-avatar ${chat.info.image ? 'viewable' : ''}`}
+                      onClick={(e) => { if (chat.info.image) { e.stopPropagation(); viewImage(chat.info.image, chat.info.name, 'room-photo.jpg'); } }}>
                       {chat.info.image ? <img src={chat.info.image} alt="" /> : (chat.info.name || '#')[0].toUpperCase()}
                     </div>
                     <div className="chat-item-body">
@@ -544,7 +554,8 @@ export default function Page() {
                 <header className="chat-header">
                   <button className="icon-btn back conv-back" onClick={() => { setActiveCode(null); activeCodeRef.current = null; }} title="Back">‹</button>
                   <div className="chat-title" onClick={() => setModal({ type: 'roomInfo', code: activeCode })}>
-                    <div className="chat-room-avatar">
+                    <div className={`chat-room-avatar ${activeChat.info.image ? 'viewable' : ''}`}
+                      onClick={(e) => { if (activeChat.info.image) { e.stopPropagation(); viewImage(activeChat.info.image, activeChat.info.name, 'room-photo.jpg'); } }}>
                       {activeChat.info.image ? <img src={activeChat.info.image} alt="" /> : (activeChat.info.name || '#')[0].toUpperCase()}
                     </div>
                     <div className="chat-title-text">
@@ -695,12 +706,13 @@ export default function Page() {
               meId={profile.userId}
               onPickFail={() => toast('Could not load that image')}
               onSave={(fields) => saveRoom(modal.code, fields)}
+              onView={viewImage}
               onClose={() => setModal(null)}
             />
           )}
 
           {modal.type === 'profile' && (
-            <ProfileSettings profile={profile} onPick={pickAvatar} onSave={saveProfileSettings} onClose={() => setModal(null)} />
+            <ProfileSettings profile={profile} onPick={pickAvatar} onSave={saveProfileSettings} onView={viewImage} onClose={() => setModal(null)} />
           )}
 
           {modal.type === 'deleteMsg' && (
@@ -743,7 +755,9 @@ export default function Page() {
 
       {lightbox && (
         <div className="lightbox" onClick={() => setLightbox(null)}>
-          <img src={lightbox.url} alt="" />
+          {lightbox.title && <div className="lightbox-title" onClick={(e) => e.stopPropagation()}>{lightbox.title}</div>}
+          <button className="lightbox-close" title="Close" onClick={() => setLightbox(null)}>✕</button>
+          <img src={lightbox.url} alt="" onClick={(e) => e.stopPropagation()} />
           <button className="lightbox-dl" onClick={(e) => { e.stopPropagation(); downloadMedia(lightbox.url, lightbox.name || 'image.jpg'); }}>⬇ Download</button>
         </div>
       )}
@@ -869,13 +883,18 @@ function MessageBubble({ m, me, isGroup, onReply, onDelete, onImage, reacting, o
   );
 }
 
-function ProfileSettings({ profile, onPick, onSave, onClose }) {
+function ProfileSettings({ profile, onPick, onSave, onView, onClose }) {
   const [name, setName] = useState(profile.name);
   const [about, setAbout] = useState(profile.about || '');
   return (
     <div>
       <h3>Profile settings</h3>
       <AvatarPicker avatar={profile.avatar} name={profile.name} onPick={onPick} />
+      {profile.avatar && (
+        <div className="view-photo-row">
+          <button className="btn ghost small" onClick={() => onView(profile.avatar, profile.name, 'my-photo.jpg')}>🔍 View photo</button>
+        </div>
+      )}
       <label className="field"><span>Name</span>
         <input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} /></label>
       <label className="field"><span>About</span>
@@ -888,7 +907,7 @@ function ProfileSettings({ profile, onPick, onSave, onClose }) {
   );
 }
 
-function RoomInfo({ chat, isOwner, meId, onPickFail, onSave, onClose }) {
+function RoomInfo({ chat, isOwner, meId, onPickFail, onSave, onView, onClose }) {
   const [name, setName] = useState(chat.info.name);
   const [description, setDescription] = useState(chat.info.description || '');
   const [image, setImage] = useState(chat.info.image || '');
@@ -899,9 +918,21 @@ function RoomInfo({ chat, isOwner, meId, onPickFail, onSave, onClose }) {
   return (
     <div>
       <h3>Room info</h3>
-      {isOwner
-        ? <AvatarPicker avatar={image} name={name} onPick={pick} />
-        : <div className="avatar-picker"><Avatar src={image} name={name} size={110} /></div>}
+      {isOwner ? (
+        <>
+          <AvatarPicker avatar={image} name={name} onPick={pick} />
+          {image && (
+            <div className="view-photo-row">
+              <button className="btn ghost small" onClick={() => onView(image, name, 'room-photo.jpg')}>🔍 View photo</button>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className={`avatar-picker ${image ? 'viewable' : ''}`}
+          onClick={() => image && onView(image, name, 'room-photo.jpg')}>
+          <Avatar src={image} name={name} size={110} />
+        </div>
+      )}
       {isOwner ? (
         <>
           <label className="field"><span>Room name</span>
@@ -923,7 +954,10 @@ function RoomInfo({ chat, isOwner, meId, onPickFail, onSave, onClose }) {
       <div>
         {chat.members.map((m) => (
           <div className="member-row" key={m.userId}>
-            <Avatar src={m.avatar} name={m.name} size={42} />
+            <span className={m.avatar ? 'viewable' : undefined}
+              onClick={() => m.avatar && onView(m.avatar, m.name, 'photo.jpg')}>
+              <Avatar src={m.avatar} name={m.name} size={42} />
+            </span>
             <div className="who">
               <div className="nm strong">{m.name}{m.userId === meId ? ' (you)' : ''}{chat.info.ownerId === m.userId ? ' • admin' : ''}</div>
               <div className="muted tiny">{m.online ? 'online' : lastSeenLabel(m.lastSeen)}</div>
